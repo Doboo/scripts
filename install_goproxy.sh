@@ -12,7 +12,7 @@ detect_architecture() {
     local arch=$(uname -m)
     case $arch in
         x86_64) echo "amd64" ;;
-        aarch64) echo "arm64" ;;
+        aarch64) echo "arm64-v8" ;;
         armv7l) echo "arm" ;;
         i386|i686) echo "386" ;;
         *) echo "不支持的架构: $arch" >&2; exit 1 ;;
