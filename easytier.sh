@@ -15,17 +15,6 @@ usage() {
     exit 1
 }
 
-# 获取最新版本号
-get_latest_version() {
-    local latest_version
-    latest_version=$(curl -s https://api.github.com/repos/EasyTier/EasyTier/releases/latest | grep -oP '"tag_name":\s*"\K(.*)(?=")')
-    if [ -n "$latest_version" ]; then
-        echo "$latest_version"
-    else
-        echo "$LOCAL_EASYTIER_VERSION" # 获取失败则返回本地版本
-    fi
-}
-
 # 获取CPU架构
 get_arch() {
     local arch=$(uname -m)
@@ -46,20 +35,13 @@ ACTION=$1
 USERNAME=$2
 HOSTNAME=$3
 ARCH=$(get_arch)
-LOCAL_EASYTIER_VERSION="v2.4.2" # 本地默认版本
-EASYTIER_VERSION=$(get_latest_version)
-
-if [ "$EASYTIER_VERSION" != "$LOCAL_EASYTIER_VERSION" ]; then
-    echo "检测到新版本: $EASYTIER_VERSION (本地默认: $LOCAL_EASYTIER_VERSION)"
-else
-    echo "当前已是最新版本: $EASYTIER_VERSION"
-fi
+EASYTIER_VERSION="v2.4.2" # Define the EasyTier version
 
 # 下载并解压EasyTier文件
 download_and_extract() {
     local arch_name=$1
     local download_url=""
-    local extracted_dir_name=""
+    local extracted_dir_name="" # 用于存储解压后的子目录名
 
     case $arch_name in
         x86_64)
@@ -88,6 +70,7 @@ download_and_extract() {
     fi
 
     echo "正在解压文件到 /root/easytier/..."
+    # 注意：这里先解压到 /root/easytier/, 它会在此目录下创建二级目录
     unzip -o /tmp/easytier.zip -d /root/easytier/
     if [ $? -ne 0 ]; then
         echo "错误: 解压EasyTier文件失败."
@@ -95,12 +78,14 @@ download_and_extract() {
         exit 1
     fi
 
+    # 移动二级目录中的文件到 /root/easytier/
     if [ -d "/root/easytier/${extracted_dir_name}" ]; then
         echo "正在将文件从 /root/easytier/${extracted_dir_name} 移动到 /root/easytier/..."
         mv /root/easytier/"${extracted_dir_name}"/* /root/easytier/
         if [ $? -ne 0 ]; then
             echo "警告: 移动文件失败，请手动检查 /root/easytier/ 目录。"
         fi
+        # 删除现在为空的二级目录
         rmdir /root/easytier/"${extracted_dir_name}" 2>/dev/null
     else
         echo "警告: 未找到预期的二级目录 /root/easytier/${extracted_dir_name}。请手动检查解压结果。"
@@ -114,12 +99,20 @@ download_and_extract() {
 
 # 安装流程
 install_service() {
+    # 1. 新建文件夹路径为 /root/easytier
     if [ -d "/root/easytier" ]; then
         rm -rf /root/easytier
     fi
     mkdir -p /root/easytier
+
+    # 2. 根据架构下载并解压文件
     download_and_extract "$ARCH"
 
+    # 3. 设置主机名
+    #hostnamectl set-hostname "$HOSTNAME"
+    #--machine-id $HOSTNAME
+
+    # 4. 创建systemd服务
     service_content="[Unit]
 Description=EasyTier Service
 After=network.target syslog.target
@@ -133,6 +126,8 @@ RestartSec=5
 WantedBy=multi-user.target"
 
     echo "$service_content" > /etc/systemd/system/easytier.service
+
+    # 5. 启动服务
     systemctl daemon-reload
     systemctl enable easytier
     systemctl restart easytier
@@ -142,6 +137,10 @@ WantedBy=multi-user.target"
 
 # 修改配置流程
 modify_config() {
+    # 1. 更新主机名
+    #hostnamectl set-hostname "$HOSTNAME"
+  #--machine-id $HOSTNAME
+    # 2. 更新服务文件
     service_content="[Unit]
 Description=EasyTier Service
 After=network.target syslog.target
@@ -155,6 +154,8 @@ RestartSec=5
 WantedBy=multi-user.target"
 
     echo "$service_content" > /etc/systemd/system/easytier.service
+
+    # 3. 重启服务
     systemctl daemon-reload
     systemctl restart easytier
     echo "EasyTier服务配置已更新并重启。查看日志:"
@@ -163,22 +164,36 @@ WantedBy=multi-user.target"
 
 # 卸载流程
 uninstall_service() {
+    # 1. 停止并禁用服务
     systemctl stop easytier 2>/dev/null
     systemctl disable easytier 2>/dev/null
     systemctl daemon-reload
     systemctl reset-failed
+
+    # 2. 删除服务文件
     rm -f /etc/systemd/system/easytier.service
+
+    # 3. 删除安装文件
     rm -rf /root/easytier
-    rm -f /root/easytier.sh
+    rm -f /root/easytier.sh # Assuming the script itself is named easytier.sh
     echo "EasyTier服务已卸载，相关文件已删除"
 }
 
 # 更新流程
 update_service() {
+    # 1. 停止服务
     systemctl stop easytier 2>/dev/null
+
+    # 2. 删除原来的程序文件
     rm -rf /root/easytier
+
+    # 3. 新建文件夹路径为 /root/easytier
     mkdir -p /root/easytier
+
+    # 4. 根据架构下载并解压新的程序文件
     download_and_extract "$ARCH"
+
+    # 5. 重新启动服务
     systemctl daemon-reload
     systemctl enable easytier
     systemctl restart easytier
