@@ -59,7 +59,7 @@ fi
 download_and_extract() {
     local arch_name=$1
     local download_url=""
-    local extracted_dir_name="" # 用于存储解压后的子目录名
+    local extracted_dir_name=""
 
     case $arch_name in
         x86_64)
@@ -96,4 +96,120 @@ download_and_extract() {
     fi
 
     if [ -d "/root/easytier/${extracted_dir_name}" ]; then
-        echo "正在将文件从 /root/easytier/${extracted_di_
+        echo "正在将文件从 /root/easytier/${extracted_dir_name} 移动到 /root/easytier/..."
+        mv /root/easytier/"${extracted_dir_name}"/* /root/easytier/
+        if [ $? -ne 0 ]; then
+            echo "警告: 移动文件失败，请手动检查 /root/easytier/ 目录。"
+        fi
+        rmdir /root/easytier/"${extracted_dir_name}" 2>/dev/null
+    else
+        echo "警告: 未找到预期的二级目录 /root/easytier/${extracted_dir_name}。请手动检查解压结果。"
+    fi
+
+    rm -f /tmp/easytier.zip
+    chmod +x /root/easytier/easytier-core
+    chmod +x /root/easytier/easytier-cli
+    echo "EasyTier文件下载并解压完成."
+}
+
+# 安装流程
+install_service() {
+    if [ -d "/root/easytier" ]; then
+        rm -rf /root/easytier
+    fi
+    mkdir -p /root/easytier
+    download_and_extract "$ARCH"
+
+    service_content="[Unit]
+Description=EasyTier Service
+After=network.target syslog.target
+Wants=network.target
+[Service]
+Type=simple
+ExecStart=/root/easytier/easytier-core -w $USERNAME  --hostname $HOSTNAME 
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target"
+
+    echo "$service_content" > /etc/systemd/system/easytier.service
+    systemctl daemon-reload
+    systemctl enable easytier
+    systemctl restart easytier
+    echo "EasyTier服务已安装并启动。查看日志:"
+    journalctl -f -u easytier.service
+}
+
+# 修改配置流程
+modify_config() {
+    service_content="[Unit]
+Description=EasyTier Service
+After=network.target syslog.target
+Wants=network.target
+[Service]
+Type=simple
+ExecStart=/root/easytier/easytier-core -w $USERNAME --hostname $HOSTNAME 
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target"
+
+    echo "$service_content" > /etc/systemd/system/easytier.service
+    systemctl daemon-reload
+    systemctl restart easytier
+    echo "EasyTier服务配置已更新并重启。查看日志:"
+    journalctl -f -u easytier.service
+}
+
+# 卸载流程
+uninstall_service() {
+    systemctl stop easytier 2>/dev/null
+    systemctl disable easytier 2>/dev/null
+    systemctl daemon-reload
+    systemctl reset-failed
+    rm -f /etc/systemd/system/easytier.service
+    rm -rf /root/easytier
+    rm -f /root/easytier.sh
+    echo "EasyTier服务已卸载，相关文件已删除"
+}
+
+# 更新流程
+update_service() {
+    systemctl stop easytier 2>/dev/null
+    rm -rf /root/easytier
+    mkdir -p /root/easytier
+    download_and_extract "$ARCH"
+    systemctl daemon-reload
+    systemctl enable easytier
+    systemctl restart easytier
+    echo "EasyTier服务已更新并重启。查看日志:"
+    journalctl -f -u easytier.service
+}
+
+# 根据参数执行不同操作
+case $ACTION in
+    install)
+        if [ $# -ne 3 ]; then
+            echo "错误: install操作需要用户名和主机名参数"
+            usage
+        fi
+        install_service
+        ;;
+    modify)
+        if [ $# -ne 3 ]; then
+            echo "错误: modify操作需要用户名和主机名参数"
+            usage
+        fi
+        modify_config
+        ;;
+    uninstall)
+        uninstall_service
+        ;;
+    update)
+        update_service
+        ;;
+    *)
+        echo "错误: 未知操作 '$ACTION'"
+        usage
+        ;;
+esac
