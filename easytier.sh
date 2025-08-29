@@ -35,7 +35,7 @@ ACTION=$1
 USERNAME=$2
 HOSTNAME=$3
 ARCH=$(get_arch)
-EASYTIER_VERSION="v2.4.2" # Define the EasyTier version
+EASYTIER_VERSION="v2.4.3" # Define the EasyTier version
 
 # 下载并解压EasyTier文件
 download_and_extract() {
