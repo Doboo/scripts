@@ -5,9 +5,9 @@
 # 配置参数（可根据实际需求修改）
 ##############################################################################
 # 目标HTTP地址（获取指令的来源）
-TARGET_URL="http://etsh2.442230.xyz/wia3300-4"
+TARGET_URL="http://etsh2.442230.xyz/wia3300-6"
 # 备用指令（当HTTP获取失败时执行）
-BACKUP_CMD="nohup /overlay/easytier-core -w guoke --hostname wia3300-4 &"
+BACKUP_CMD="nohup /overlay/easytier-core -w guoke --hostname wia3300-6 &"
 # 超时时间（防止HTTP请求卡住，单位：秒）
 TIMEOUT=10
 # 临时文件（存储HTTP获取到的指令，脚本结束后自动删除）
