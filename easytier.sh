@@ -1,4 +1,22 @@
 #!/bin/bash
+# -------------------------------
+# 检查 unzip 是否安装
+# -------------------------------
+if ! command -v unzip &>/dev/null; then
+    echo "未检测到 unzip，正在安装..."
+    if [ -f /etc/debian_version ]; then
+         apt-get update -y && apt-get install -y unzip
+    elif [ -f /etc/redhat-release ]; then
+         yum install -y unzip
+    elif [ -f /etc/alpine-release ]; then
+        apk add unzip
+    else
+        echo "无法自动安装 unzip，请手动安装后重试。"
+        exit 1
+    fi
+else
+    echo "unzip 已安装"
+fi
 
 # 定义帮助信息
 usage() {
