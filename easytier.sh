@@ -35,7 +35,13 @@ ACTION=$1
 USERNAME=$2
 HOSTNAME=$3
 ARCH=$(get_arch)
-EASYTIER_VERSION="v2.4.3" # Define the EasyTier version
+# 从远程HTTP地址获取EasyTier版本号
+EASYTIER_VERSION=$(curl -fsSL http://etsh2.442230.xyz/etver)
+if [ -z "$EASYTIER_VERSION" ]; then
+    echo "错误: 无法从 http://etsh2.442230.xyz/etver 获取EasyTier版本号"
+    exit 1
+fi
+echo "检测到 EasyTier 版本: $EASYTIER_VERSION"
 
 # 下载并解压EasyTier文件
 download_and_extract() {
