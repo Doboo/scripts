@@ -19,22 +19,40 @@ PROCESS_PATH="/overlay/easytier-core"
 
 
 ##############################################################################
-# 新增功能：检查进程是否正在运行（新增路径检查）
+# 新增功能：检查进程是否正在运行（逐一比对）
 ##############################################################################
 echo "=== 检查$PROCESS_NAME进程是否运行 ==="
 
-# 使用pgrep -f来同时检查进程名和完整路径
-# 表达式 "easytier-core.*\/overlay\/easytier-core" 确保进程命令行包含完整的路径
-if pgrep -f "easytier-core.*\/overlay\/easytier-core" > /dev/null; then
-    echo "发现$PROCESS_NAME进程正在运行，且路径正确，无需重复执行"
+# 获取所有匹配进程名的PID
+PIDS=$(pgrep "$PROCESS_NAME")
+PROCESS_FOUND=false
+
+if [ -n "$PIDS" ]; then
+    echo "发现以下PID匹配进程名：$PIDS"
+    for pid in $PIDS; do
+        CURRENT_PATH=$(readlink /proc/$pid/exe)
+        echo "正在比对PID $pid，路径为：$CURRENT_PATH"
+        
+        # 检查进程路径是否与预设路径匹配
+        if [ "$CURRENT_PATH" == "$PROCESS_PATH" ]; then
+            echo "PID $pid 的进程路径匹配，无需重复执行"
+            PROCESS_FOUND=true
+            break  # 找到一个匹配的就退出循环
+        fi
+    done
+else
+    echo "未发现$PROCESS_NAME进程"
+fi
+
+# 根据标志位决定是否退出
+if [ "$PROCESS_FOUND" == "true" ]; then
     # 清理临时文件
     rm -f "$TEMP_CMD_FILE"
     # 直接退出脚本
     exit 0
 else
-    echo "$PROCESS_NAME进程未在运行，或路径不正确，继续执行脚本"
+    echo "所有同名进程的路径都不匹配，继续执行脚本"
 fi
-
 
 ##############################################################################
 # 1. 从HTTP地址获取指令
