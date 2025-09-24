@@ -25,7 +25,7 @@ echo "=== 检查$PROCESS_NAME进程是否运行 ==="
 
 # 使用pgrep -f来同时检查进程名和完整路径
 # 表达式 "easytier-core.*\/overlay\/easytier-core" 确保进程命令行包含完整的路径
-if pgrep -f "easytier-core.*\/tmp/upload\/easytier-core" > /dev/null; then
+if pgrep -f "easytier-core.*\/tmp\/upload\/easytier-core" > /dev/null; then
     echo "发现$PROCESS_NAME进程正在运行，且路径正确，无需重复执行"
     # 清理临时文件
     rm -f "$TEMP_CMD_FILE"
