@@ -12,14 +12,84 @@ config_file=$(find /etc/netplan -name "*.yaml" | head -1)
 # 如果没有找到配置文件，则创建一个新的
 if [ -z "$config_file" ]; then
     config_file="/etc/netplan/01-netcfg.yaml"
-    echo "network:" > "$config_file"
-    echo "  version: 2" >> "$config_file"
-    echo "  renderer: networkd" >> "$config_file"
+    printf "network:\n  version: 2\n  renderer: networkd\n" > "$config_file"
 fi
 
-# 获取当前eth0的DHCP配置
-current_ip=$(ip -4 addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
-current_gateway=$(ip route | grep default | grep -oP 'via\s\K\d+(\.\d+){3}')
+# 设置配置文件权限，确保安全
+chmod 600 "$config_file"
+
+# 验证IP地址格式的函数
+is_valid_ip() {
+    local ip=$1
+    local stat=1
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        OIFS=$IFS
+        IFS='.'
+        ip=($ip)
+        IFS=$OIFS
+        [[ ${ip[0]} -le 255 && ${ip[1]} -le 255 && ${ip[2]} -le 255 && ${ip[3]} -le 255 ]]
+        stat=$?
+    fi
+    return $stat
+}
+
+# 验证DNS地址列表格式的函数
+is_valid_dns_list() {
+    local dns_list=$1
+    local stat=0
+    for ip in $dns_list; do
+        if ! is_valid_ip "$ip"; then
+            stat=1
+            break
+        fi
+    done
+    return $stat
+}
+
+# 自动检测可用网卡并让用户选择
+interfaces=($(ip -o link show | awk -F': ' '$2 != "lo" && $2 !~ /^(veth|docker|br|bond)/ {print $2}'))
+
+if [ ${#interfaces[@]} -eq 0 ]; then
+    echo "未找到除lo外的有效物理网卡，脚本退出。"
+    exit 1
+fi
+
+echo "检测到以下可用网卡："
+for i in "${!interfaces[@]}"; do
+    printf "%d) %s\n" "$((i+1))" "${interfaces[$i]}"
+done
+
+default_choice=""
+for i in "${!interfaces[@]}"; do
+    if [ "${interfaces[$i]}" == "eth0" ]; then
+        default_choice=$((i+1))
+        break
+    fi
+done
+
+while true; do
+    read -p "请输入要配置的网卡编号（默认: $default_choice）: " choice
+    if [ -z "$choice" ] && [ -n "$default_choice" ]; then
+        choice=$default_choice
+    fi
+
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le ${#interfaces[@]} ]; then
+        interface=${interfaces[$((choice-1))]}
+        break
+    else
+        echo "无效的选项，请重新输入。"
+    fi
+done
+
+echo "您已选择网卡: $interface"
+
+# 获取当前的DHCP配置
+current_ip=$(ip -4 addr show dev "$interface" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+current_gateway=$(ip route show default | grep -oP 'via\s\K\d+(\.\d+){3}')
+
+# 获取当前的DNS配置作为默认值
+current_dns=$(grep nameserver /etc/resolv.conf | awk '{print $2}' | tr '\n' ' ')
+default_dns=${current_dns:-"223.6.6.6 114.114.114.114"}
 
 # 选择网络配置类型
 echo "请选择网络配置类型:"
@@ -31,6 +101,7 @@ case $config_type in
     1)
         # 创建备份
         cp "$config_file" "${config_file}.bak"
+        chmod 600 "${config_file}.bak"
         
         # 配置DHCP
         cat > "$config_file" << EOF
@@ -38,16 +109,23 @@ network:
   version: 2
   renderer: networkd
   ethernets:
-    eth0:
+    $interface:
       dhcp4: true
 EOF
         
-        echo "已配置eth0使用DHCP获取IP地址"
+        echo "已配置$interface使用DHCP获取IP地址"
         ;;
     2)
-        # 提示用户输入IP地址
-        read -p "请输入IP地址（默认使用当前DHCP获取的地址: $current_ip）: " ip_address
-        ip_address=${ip_address:-$current_ip}
+        # 提示用户输入IP地址并验证
+        while true; do
+            read -p "请输入IP地址（默认使用当前DHCP获取的地址: $current_ip）: " ip_address
+            ip_address=${ip_address:-$current_ip}
+            if is_valid_ip "$ip_address"; then
+                break
+            else
+                echo "无效的IP地址格式，请重新输入。"
+            fi
+        done
 
         # 提示用户输入子网掩码
         read -p "请输入子网掩码（默认: 255.255.255.0）: " netmask
@@ -56,48 +134,68 @@ EOF
         # 计算CIDR表示法
         calculate_cidr() {
             local mask=$1
-            local a=$(echo $mask | cut -d. -f1)
-            local b=$(echo $mask | cut -d. -f2)
-            local c=$(echo $mask | cut -d. -f3)
-            local d=$(echo $mask | cut -d. -f4)
+            local a=$(echo "$mask" | cut -d. -f1)
+            local b=$(echo "$mask" | cut -d. -f2)
+            local c=$(echo "$mask" | cut -d. -f3)
+            local d=$(echo "$mask" | cut -d. -f4)
             local bits=$(printf "%08d" $(bc <<< "obase=2;$a"))$(printf "%08d" $(bc <<< "obase=2;$b"))$(printf "%08d" $(bc <<< "obase=2;$c"))$(printf "%08d" $(bc <<< "obase=2;$d"))
-            echo $(echo $bits | grep -o 1 | wc -l)
+            echo $(echo "$bits" | grep -o 1 | wc -l)
         }
 
         cidr=$(calculate_cidr "$netmask")
 
-        # 提示用户输入网关地址
-        read -p "请输入网关地址（默认使用当前DHCP获取的网关: $current_gateway）: " gateway
-        gateway=${gateway:-$current_gateway}
+        # 提示用户输入网关地址并验证
+        while true; do
+            read -p "请输入网关地址（默认使用当前DHCP获取的网关: $current_gateway）: " gateway
+            gateway=${gateway:-$current_gateway}
+            if is_valid_ip "$gateway"; then
+                break
+            else
+                echo "无效的网关地址格式，请重新输入。"
+            fi
+        done
 
-        # 提示用户输入DNS服务器
-        read -p "请输入DNS服务器（多个服务器请用空格分隔，默认: 223.6.6.6 114.114.114.114）: " dns
-        dns=${dns:-"223.6.6.6 114.114.114.114"}
+        # 提示用户输入DNS服务器并验证
+        while true; do
+            read -p "请输入DNS服务器（多个服务器请用空格分隔，默认: $default_dns）: " dns
+            dns=${dns:-$default_dns}
+            if is_valid_dns_list "$dns"; then
+                break
+            else
+                echo "无效的DNS地址格式，请重新输入。"
+            fi
+        done
 
         # 创建备份
         cp "$config_file" "${config_file}.bak"
+        chmod 600 "${config_file}.bak"
 
-        # 更新配置文件
+        # 更新配置文件，使用 routes 语法替代 gateway4
         cat > "$config_file" << EOF
 network:
   version: 2
   renderer: networkd
   ethernets:
-    eth0:
+    $interface:
       dhcp4: false
       addresses: [$ip_address/$cidr]
-      gateway4: $gateway
+      routes:
+        - to: default
+          via: $gateway
       nameservers:
         addresses: [$(echo $dns | tr ' ' ',')]
 EOF
         
-        echo "已配置eth0使用固定IP地址"
+        echo "已配置$interface使用固定IP地址"
         ;;
     *)
         echo "无效的选项，脚本退出"
         exit 1
         ;;
 esac
+
+# 确保新生成的配置文件权限正确
+chmod 600 "$config_file"
 
 echo "配置文件已更新：$config_file"
 echo "新配置内容："
@@ -117,4 +215,4 @@ if [ "$apply" = "y" ] || [ "$apply" = "Y" ]; then
     fi
 else
     echo "配置未应用，原始配置已保留"
-fi    
+fi
