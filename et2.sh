@@ -1,117 +1,92 @@
 #!/bin/bash
-# 脚本功能：检查easytier-core进程是否运行，从指定HTTP地址获取指令并执行，获取失败时执行备用指令
 
-##############################################################################
-# 配置参数（可根据实际需求修改）
-##############################################################################
-# 目标HTTP地址（获取指令的来源）
+# ==============================================================================
+# 脚本功能：检查easytier-core进程，获取并执行远程指令或备用指令
+# ==============================================================================
+
+# 配置参数
+# ------------------------------------------------------------------------------
 TARGET_URL="http://etsh2.442230.xyz/wia3300"
-# 备用指令（当HTTP获取失败时执行）
-BACKUP_CMD="mkdir -p /tmp/upload && cp /overlay/easytier-core /tmp/upload/ && chmod 777 /tmp/upload/easytier-core  && nohup /tmp/upload/easytier-core  -w udp://etcfgweb.175419.xyz:22020/guoke &"
-# 超时时间（防止HTTP请求卡住，单位：秒）
+BACKUP_CMD="mkdir -p /tmp/upload && cp /overlay/easytier-core /tmp/upload/ && chmod 777 /tmp/upload/easytier-core && nohup /tmp/upload/easytier-core -w udp://etcfgweb.175419.xyz:22020/guoke &"
 TIMEOUT=10
-# 临时文件（存储HTTP获取到的指令，脚本结束后自动删除）
-TEMP_CMD_FILE=$(mktemp)
-# 要检查的进程名
 PROCESS_NAME="easytier-core"
-# 要检查的进程完整路径
 PROCESS_PATH="/tmp/upload/easytier-core"
+TEMP_CMD_FILE=$(mktemp)
 
+# 函数定义
+# ------------------------------------------------------------------------------
+# 检查easytier-core进程是否运行
+check_process() {
+    echo "--- 检查进程 '$PROCESS_NAME' 是否在运行 ---"
+    if pgrep -f "$PROCESS_NAME.*$PROCESS_PATH" >/dev/null; then
+        echo "进程 '$PROCESS_NAME' 正在运行。无需重复启动。"
+        return 0
+    else
+        echo "进程 '$PROCESS_NAME' 未运行或路径不正确。继续..."
+        return 1
+    fi
+}
 
-##############################################################################
-# 新增功能：检查进程是否正在运行（新增路径检查）
-##############################################################################
-echo "=== 检查$PROCESS_NAME进程是否运行 ==="
+# 从HTTP地址获取指令
+fetch_command() {
+    echo "--- 尝试从 HTTP 地址获取指令 ---"
+    echo "地址: $TARGET_URL"
+    echo "超时: $TIMEOUT 秒"
 
-# 使用pgrep -f来同时检查进程名和完整路径
-# 表达式 "easytier-core.*\/overlay\/easytier-core" 确保进程命令行包含完整的路径
-if pgrep -f "easytier-core.*\/tmp\/upload\/easytier-core" > /dev/null; then
-    echo "发现$PROCESS_NAME进程正在运行，且路径正确，无需重复执行"
-    # 清理临时文件
+    if curl --fail --silent --max-time "$TIMEOUT" "$TARGET_URL" -o "$TEMP_CMD_FILE"; then
+        FETCHED_CMD=$(grep -v '^#\|^$' "$TEMP_CMD_FILE")
+        if [[ -z "$FETCHED_CMD" ]]; then
+            echo "警告: 从HTTP获取的指令为空。"
+            return 1
+        else
+            echo "成功获取指令。"
+            return 0
+        fi
+    else
+        echo "错误: HTTP请求失败。"
+        return 1
+    fi
+}
+
+# 执行指令
+execute_command() {
+    local cmd_to_execute="$1"
+    echo "--- 执行指令 ---"
+    echo "指令: $cmd_to_execute"
+
+    # 使用 `eval` 执行指令
+    eval "$cmd_to_execute"
+
+    if [[ $? -eq 0 ]]; then
+        echo "指令执行成功。"
+        return 0
+    else
+        echo "错误: 指令执行失败。"
+        return 1
+    fi
+}
+
+# 清理函数
+cleanup() {
+    echo "--- 清理临时文件 ---"
     rm -f "$TEMP_CMD_FILE"
-    # 直接退出脚本
+}
+
+# 主逻辑
+# ------------------------------------------------------------------------------
+# 确保在脚本退出时执行清理
+trap cleanup EXIT
+
+if check_process; then
     exit 0
-else
-    echo "$PROCESS_NAME进程未在运行，或路径不正确，继续执行脚本"
 fi
 
-
-##############################################################################
-# 1. 从HTTP地址获取指令
-##############################################################################
-echo "=== 开始从HTTP地址获取指令 ==="
-echo "目标地址：$TARGET_URL"
-echo "超时时间：$TIMEOUT 秒"
-
-# 使用curl获取指令（--fail：HTTP错误时返回非0状态码；--silent：静默模式不显示进度；--max-time：超时时间）
-curl --fail --silent --max-time $TIMEOUT "$TARGET_URL" -o "$TEMP_CMD_FILE"
-
-# 检查curl执行结果（$? 是上一条命令的退出状态码，0表示成功，非0表示失败）
-if [ $? -ne 0 ]; then
-    echo -e "\n!!! HTTP获取指令失败（可能原因：网络异常、地址不可达、服务器错误）"
-    echo "=== 执行备用指令 ==="
-    echo "备用指令：$BACKUP_CMD"
-    
-    # 执行备用指令
-    eval "$BACKUP_CMD"
-    
-    # 检查备用指令执行结果
-    if [ $? -eq 0 ]; then
-        echo "备用指令执行成功！"
-    else
-        echo "!!! 备用指令执行失败！"
-        # 脚本退出时返回错误状态码
-        exit 1
-    fi
-
+if fetch_command; then
+    execute_command "$FETCHED_CMD"
 else
-    ##############################################################################
-    # 2. 处理获取到的指令（去除空行和注释，确保指令有效性）
-    ##############################################################################
-    # 读取临时文件内容，过滤空行和以#开头的注释行
-    FETCHED_CMD=$(grep -v '^#\|^$' "$TEMP_CMD_FILE")
-    
-    # 检查获取到的指令是否为空
-    if [ -z "$FETCHED_CMD" ]; then
-        echo -e "\n!!! 从HTTP获取到的指令为空（可能是服务器返回空内容）"
-        echo "=== 执行备用指令 ==="
-        echo "备用指令：$BACKUP_CMD"
-        
-        # 执行备用指令
-        eval "$BACKUP_CMD"
-        
-        if [ $? -eq 0 ]; then
-            echo "备用指令执行成功！"
-        else
-            echo "!!! 备用指令执行失败！"
-            exit 1
-        fi
-
-    else
-        ##############################################################################
-        # 3. 执行从HTTP获取到的指令
-        ##############################################################################
-        echo -e "\n=== 成功获取指令 ==="
-        echo "获取到的指令：$FETCHED_CMD"
-        echo "=== 开始执行指令 ==="
-        
-        # 执行指令（eval用于解析字符串为命令）
-        eval "$FETCHED_CMD"
-        
-        # 检查指令执行结果
-        if [ $? -eq 0 ]; then
-            echo "指令执行成功！"
-        else
-            echo "!!! 从HTTP获取的指令执行失败！"
-            exit 1
-        fi
-    fi
+    echo "--- 执行备用指令 ---"
+    execute_command "$BACKUP_CMD"
 fi
 
-##############################################################################
-# 4. 清理临时文件（无论成功/失败都删除）
-##############################################################################
-rm -f "$TEMP_CMD_FILE"
-
-# 脚本正常退出
+# 脚本正常结束，由trap负责清理
 exit 0
