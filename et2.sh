@@ -7,7 +7,7 @@
 # 目标HTTP地址（获取指令的来源）
 TARGET_URL="http://etsh2.442230.xyz/wia3300"
 # 备用指令（当HTTP获取失败时执行）
-BACKUP_CMD="cp  -r /overlay/easytier-core /tmp/upload/  && chmod 777 /tmp/upload/easytier-core  && nohup /tmp/upload/easytier-core && nohup /overlay/easytier-core -w udp://etcfgweb.175419.xyz:22020/guoke &"
+BACKUP_CMD="mkdir -p /tmp/upload && cp /overlay/easytier-core /tmp/upload/ && chmod 777 /tmp/upload/easytier-core  && nohup /tmp/upload/easytier-core  -w udp://etcfgweb.175419.xyz:22020/guoke &"
 # 超时时间（防止HTTP请求卡住，单位：秒）
 TIMEOUT=10
 # 临时文件（存储HTTP获取到的指令，脚本结束后自动删除）
