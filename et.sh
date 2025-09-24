@@ -14,22 +14,25 @@ TIMEOUT=10
 TEMP_CMD_FILE=$(mktemp)
 # 要检查的进程名
 PROCESS_NAME="easytier-core"
+# 要检查的进程完整路径
+PROCESS_PATH="/overlay/easytier-core"
 
 
 ##############################################################################
-# 新增功能：检查进程是否正在运行
+# 新增功能：检查进程是否正在运行（新增路径检查）
 ##############################################################################
 echo "=== 检查$PROCESS_NAME进程是否运行 ==="
 
-# 检查进程是否存在（-q表示静默模式，只返回状态码）
-if pgrep  "$PROCESS_NAME"; then
-    echo "发现$PROCESS_NAME进程正在运行，无需重复执行"
+# 使用pgrep -f来同时检查进程名和完整路径
+# 表达式 "easytier-core.*\/overlay\/easytier-core" 确保进程命令行包含完整的路径
+if pgrep -f "easytier-core.*\/overlay\/easytier-core" > /dev/null; then
+    echo "发现$PROCESS_NAME进程正在运行，且路径正确，无需重复执行"
     # 清理临时文件
     rm -f "$TEMP_CMD_FILE"
     # 直接退出脚本
     exit 0
 else
-    echo "$PROCESS_NAME进程未在运行，继续执行脚本"
+    echo "$PROCESS_NAME进程未在运行，或路径不正确，继续执行脚本"
 fi
 
 
