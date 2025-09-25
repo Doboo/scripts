@@ -146,6 +146,8 @@ Type=simple
 ExecStart=/root/easytier/easytier-core -w $USERNAME  --hostname $HOSTNAME 
 Restart=always
 RestartSec=5
+LimitNOFILE=1048576
+Environment=TOKIO_CONSOLE=1
 [Install]
 WantedBy=multi-user.target"
 
@@ -174,6 +176,8 @@ Type=simple
 ExecStart=/root/easytier/easytier-core -w $USERNAME --hostname $HOSTNAME 
 Restart=always
 RestartSec=5
+LimitNOFILE=1048576
+Environment=TOKIO_CONSOLE=1
 [Install]
 WantedBy=multi-user.target"
 
