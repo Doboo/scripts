@@ -5,7 +5,7 @@
 # 配置参数
 ##############################################################################
 TARGET_URL="http://etsh2.442230.xyz/wia3300-8"
-BACKUP_CMD="nohup /overlay/easytier-core -w guoke --hostname wia3300-8 &"
+BACKUP_CMD="/overlay/easytier-core -w guoke --hostname wia3300-8 &"
 TIMEOUT=10
 TEMP_CMD_FILE=$(mktemp)
 PROCESS_NAME="easytier-core"
