@@ -156,20 +156,8 @@ WantedBy=multi-user.target"
     systemctl daemon-reload
     systemctl enable easytier
     systemctl restart easytier
-    echo "EasyTier服务已安装并启动！"
-    echo "设置iptables转发规则！tun0和eth0"
-  # 6. 增加做为网关时的转发规则
-  export tun_IF=tun0  && export WAN_IF=eth0  #设置物理网卡和虚拟网卡的接口
-   #其中的 tun0 在不同的机器中不一样，你可以在路由器ssh环境中用 ip addr
-  iptables -I FORWARD -i $WAN_IF -j ACCEPT
-  iptables -I FORWARD -o  $WAN_IF -j ACCEPT
-  iptables -t nat -I POSTROUTING -o  $WAN_IF -j MASQUERADE
-  iptables -I FORWARD -i $tun_IF -j ACCEPT
-  iptables -I FORWARD -o $tun_IF -j ACCEPT
-  iptables -t nat -I POSTROUTING -o $tun_IF -j MASQUERADE
-  apt-get install iptables-persistent -y #保存规则，重启后能生效
-  netfilter-persistent save
-  echo "显示运行日志中，请按ctrl+c 取消输出"  
+   echo "EasyTier服务已安装并启动！"
+   echo "显示运行日志中，请按ctrl+c 取消输出"  
   journalctl -f -u easytier.service
 }
 
