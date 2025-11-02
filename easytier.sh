@@ -143,7 +143,7 @@ After=network.target syslog.target
 Wants=network.target
 [Service]
 Type=simple
-ExecStart=/root/easytier/easytier-core -w udp://config-server.175419.xyz:22020/$USERNAME  --hostname $HOSTNAME 
+ExecStart=/root/easytier/easytier-core -w $USERNAME  --hostname $HOSTNAME 
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
