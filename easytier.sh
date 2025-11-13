@@ -176,6 +176,9 @@ Type=simple
 ExecStart=/root/easytier/easytier-core -w $USERNAME --hostname $HOSTNAME 
 Restart=always
 RestartSec=5
+# 关键配置：将输出定向到HDMI对应的物理控制台（tty1为默认第一个物理终端）
+StandardOutput=file:/dev/tty1
+StandardError=file:/dev/tty1
 LimitNOFILE=1048576
 Environment=TOKIO_CONSOLE=1
 [Install]
