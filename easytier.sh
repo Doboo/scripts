@@ -69,15 +69,15 @@ download_and_extract() {
 
     case $arch_name in
         x86_64)
-            download_url="https://ghfast.top/https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-x86_64-${EASYTIER_VERSION}.zip"
+            download_url="https://docker.mk/https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-x86_64-${EASYTIER_VERSION}.zip"
             extracted_dir_name="easytier-linux-x86_64"
             ;;
         aarch64)
-            download_url="https://ghfast.top/https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-aarch64-${EASYTIER_VERSION}.zip"
+            download_url="https://docker.mk/https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-aarch64-${EASYTIER_VERSION}.zip"
             extracted_dir_name="easytier-linux-aarch64"
             ;;
         armv7)
-            download_url="https://ghfast.top/https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-armv7-${EASYTIER_VERSION}.zip"
+            download_url="https://docker.mk/https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-armv7-${EASYTIER_VERSION}.zip"
             extracted_dir_name="easytier-linux-armv7"
             ;;
         *)
