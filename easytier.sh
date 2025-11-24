@@ -143,7 +143,7 @@ After=network.target syslog.target
 Wants=network.target
 [Service]
 Type=simple
-ExecStart=/root/easytier/easytier-core -w $USERNAME  --hostname $HOSTNAME 
+ExecStart=/root/easytier/easytier-core -w udp://cfgs.175419.xyz:22020/$USERNAME  --hostname $HOSTNAME 
 Restart=always
 RestartSec=5
 # 关键配置：将输出定向到HDMI对应的物理控制台（tty1为默认第一个物理终端）
@@ -176,7 +176,7 @@ After=network.target syslog.target
 Wants=network.target
 [Service]
 Type=simple
-ExecStart=/root/easytier/easytier-core -w $USERNAME --hostname $HOSTNAME 
+ExecStart=/root/easytier/easytier-core -w udp://cfgs.175419.xyz:22020/$USERNAME --hostname $HOSTNAME 
 Restart=always
 RestartSec=5
 # 关键配置：将输出定向到HDMI对应的物理控制台（tty1为默认第一个物理终端）
@@ -209,7 +209,7 @@ uninstall_service() {
 
     # 3. 删除安装文件
     rm -rf /root/easytier
-    rm -f /root/easytier.sh # Assuming the script itself is named easytier.sh
+    #rm -f /root/easytier.sh # Assuming the script itself is named easytier.sh
     echo "EasyTier服务已卸载，相关文件已删除"
 }
 
