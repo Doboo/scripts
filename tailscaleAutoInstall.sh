@@ -57,12 +57,12 @@ validate_auth_key() {
     fi
 }
 
-# 函数：等待网络启动完成（ping通8.8.8.8视为网络就绪）
+# 函数：等待网络启动完成（ping通223.5.5.5视为网络就绪）
 wait_for_network() {
     echo "[INFO] 等待网络连接建立（超时${NETWORK_TIMEOUT}秒）..." >&2
     local count=0
     while true; do
-        if ping -c 1 -W 2 8.8.8.8 >/dev/null 2>&1; then
+        if ping -c 1 -W 2 223.5.5.5 >/dev/null 2>&1; then
             echo "[INFO] 网络已就绪" >&2
             break
         fi
