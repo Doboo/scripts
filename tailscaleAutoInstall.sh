@@ -4,13 +4,10 @@ set -euo pipefail  # 增强脚本容错性
 # ===================== 配置项（可根据需求修改） =====================
 # 安装完成标记文件（存在则不再执行）
 MARK_FILE="/var/lib/tailscale/install_completed.mark"
-# ping验证次数（10次内有1次通即判定成功）
-PING_COUNT=10
 # 网络等待超时时间（秒，默认5分钟）
 NETWORK_TIMEOUT=300
-# 远程获取Auth-Key和验证IP的URL
+# 远程获取Auth-Key的URL（验证IP不再需要，已删除）
 KEY_URL="https://cf.442230.xyz/tailscaleKEY"
-IP_URL="https://cf.442230.xyz/tailscaleIP"
 # 远程请求超时时间（秒）
 HTTP_TIMEOUT=10
 # ====================================================================
@@ -75,27 +72,35 @@ wait_for_network() {
     done
 }
 
-# 函数：验证Tailscale安装是否成功
-# 逻辑：ping指定IP 10次，只要有1次通即判定成功（Shell return 0=成功，1=失败）
-verify_tailscale() {
-    local verify_ip="$1"
-    echo "[INFO] 验证Tailscale安装结果：ping ${verify_ip} 共${PING_COUNT}次，1次通即判定成功..." >&2
+# ==================== 核心函数：获取并验证Tailscale IPv4地址 ====================
+# 函数：获取本机Tailscale网卡的IPv4地址并验证有效性
+# 成功：返回0，纯IP输出到stdout；失败：返回1，输出空字符串
+get_and_verify_tailscale_ip() {
+    echo "[INFO] 正在获取并验证本机Tailscale IPv4地址..." >&2
     
-    # 初始化状态为「失败」（1=失败）
-    local ping_result=1
-    for ((i=1; i<=PING_COUNT; i++)); do
-        echo "[INFO] 第${i}次ping ${verify_ip}..." >&2
-        # ping 1次，超时2秒，静默执行
-        if ping -c 1 -W 2 "${verify_ip}" >/dev/null 2>&1; then
-            echo "[INFO] 第${i}次ping ${verify_ip}成功！直接判定安装验证通过" >&2
-            ping_result=0  # 置为「成功」状态
-            break  # 无需继续ping，直接退出循环
+    # 最多重试5次（避免刚启动tailscale时网卡未就绪）
+    local retry_count=5
+    local ts_ip=""
+    
+    for ((i=1; i<=retry_count; i++)); do
+        # 使用Tailscale官方命令获取IPv4地址（最可靠）
+        ts_ip=$(tailscale ip -4 2>/dev/null | tr -d '\n\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        
+        # 检查IP是否非空且格式合法
+        if [ -n "${ts_ip}" ] && [[ "${ts_ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            echo "[INFO] 第${i}次尝试：成功获取有效Tailscale IPv4地址：${ts_ip}" >&2
+            echo "${ts_ip}"
+            return 0
         fi
+        
+        echo "[INFO] 第${i}次尝试：未获取到有效Tailscale IPv4地址（当前值：${ts_ip}），1秒后重试..." >&2
         sleep 1
     done
     
-    # 返回结果：0=成功（至少1次通），1=失败（10次全不通）
-    return ${ping_result}
+    # 重试完毕仍未获取到有效IP
+    echo "[ERROR] 重试${retry_count}次后仍未获取到有效Tailscale IPv4地址" >&2
+    echo ""
+    return 1
 }
 
 # ===================== 主逻辑 =====================
@@ -111,9 +116,8 @@ fi
 # 3. 等待网络就绪（先确保能访问远程URL）
 wait_for_network
 
-# 4. 动态获取Tailscale Auth-Key和验证IP（仅捕获stdout的纯内容）
+# 4. 动态获取Tailscale Auth-Key（验证IP已移除，无需获取）
 TAILSCALE_AUTH_KEY=$(fetch_remote_content "${KEY_URL}" "Tailscale Auth-Key")
-VERIFY_IP=$(fetch_remote_content "${IP_URL}" "验证IP")
 
 # 5. 验证Auth-Key格式合法性
 validate_auth_key "${TAILSCALE_AUTH_KEY}"
@@ -136,15 +140,20 @@ if ! bash -c "${TAILSCALE_UP_CMD}"; then
     exit 1
 fi
 
-# 9. 验证安装结果（核心逻辑：10次ping只要1次通即成功）
-if verify_tailscale "${VERIFY_IP}"; then
+# 9. 核心验证：获取并验证Tailscale IPv4地址（判定安装是否成功）
+TAILSCALE_IP=$(get_and_verify_tailscale_ip)
+if [ -n "${TAILSCALE_IP}" ] && [[ "${TAILSCALE_IP}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     # 验证成功：创建标记文件（先确保目录存在）
     mkdir -p "$(dirname "${MARK_FILE}")"
     touch "${MARK_FILE}"
-    echo "[INFO] Tailscale安装验证成功（10次ping中至少1次通），标记文件已创建：${MARK_FILE}" >&2
+    
+    # 高亮显示成功信息和IP地址
+    echo -e "\n[SUCCESS] Tailscale安装成功！" >&2
+    echo -e "[SUCCESS] 本机Tailscale IPv4地址：\033[32m${TAILSCALE_IP}\033[0m" >&2
+    echo "[INFO] 安装完成标记文件已创建：${MARK_FILE}" >&2
 else
     # 验证失败：不创建标记，退出
-    echo "[ERROR] ${PING_COUNT}次ping ${VERIFY_IP}全部失败，安装验证失败" >&2
+    echo "[ERROR] 未能获取到有效Tailscale IPv4地址，安装验证失败" >&2
     exit 1
 fi
 
