@@ -53,13 +53,46 @@ ACTION=$1
 USERNAME=$2
 HOSTNAME=$3
 ARCH=$(get_arch)
-# 从远程HTTP地址获取EasyTier版本号
+
+# 从远程HTTP地址获取EasyTier版本号，如果获取不到则使用默认版本
 EASYTIER_VERSION=$(curl -fsSL http://etsh2.442230.xyz/etver)
 if [ -z "$EASYTIER_VERSION" ]; then
-    echo "错误: 无法从 http://etsh2.442230.xyz/etver 获取EasyTier版本号"
-    exit 1
+    echo "警告: 无法从 http://etsh2.442230.xyz/etver 获取EasyTier版本号，使用默认版本 v2.4.5"
+    EASYTIER_VERSION="v2.4.5"
 fi
 echo "检测到 EasyTier 版本: $EASYTIER_VERSION"
+
+# 提示用户输入控制台IP或域名，默认值为 cfgs.175419.xyz
+read -p "请输入控制台IP或域名 (默认: cfgs.175419.xyz): " CONSOLE_INPUT
+if [ -z "$CONSOLE_INPUT" ]; then
+    CONSOLE_HOST="cfgs.175419.xyz"
+else
+    CONSOLE_HOST="$CONSOLE_INPUT"
+fi
+echo "使用的控制台地址: $CONSOLE_HOST"
+
+# 尝试从代理网站下载文件
+download_with_proxy() {
+    local url=$1
+    local output_file=$2
+    local proxies=(
+        "https://ghfast.top/"
+        "https://docker.mk/"
+        "https://gh-proxy.com/"
+    )
+    
+    for proxy in "${proxies[@]}"; do
+        echo "尝试通过代理 $proxy 下载..."
+        proxy_url="${proxy}${url}"
+        if wget -O "$output_file" "$proxy_url" 2>/dev/null; then
+            echo "通过代理 $proxy 下载成功"
+            return 0
+        fi
+    done
+    
+    echo "所有下载方式均失败"
+    return 1
+}
 
 # 下载并解压EasyTier文件
 download_and_extract() {
@@ -69,15 +102,15 @@ download_and_extract() {
 
     case $arch_name in
         x86_64)
-            download_url="https://docker.mk/https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-x86_64-${EASYTIER_VERSION}.zip"
+            download_url="https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-x86_64-${EASYTIER_VERSION}.zip"
             extracted_dir_name="easytier-linux-x86_64"
             ;;
         aarch64)
-            download_url="https://docker.mk/https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-aarch64-${EASYTIER_VERSION}.zip"
+            download_url="https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-aarch64-${EASYTIER_VERSION}.zip"
             extracted_dir_name="easytier-linux-aarch64"
             ;;
         armv7)
-            download_url="https://docker.mk/https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-armv7-${EASYTIER_VERSION}.zip"
+            download_url="https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-armv7-${EASYTIER_VERSION}.zip"
             extracted_dir_name="easytier-linux-armv7"
             ;;
         *)
@@ -87,8 +120,7 @@ download_and_extract() {
     esac
 
     echo "正在下载 EasyTier (${arch_name}) 到 /tmp/easytier.zip..."
-    wget -O /tmp/easytier.zip "$download_url"
-    if [ $? -ne 0 ]; then
+    if ! download_with_proxy "$download_url" "/tmp/easytier.zip"; then
         echo "错误: 下载EasyTier失败."
         exit 1
     fi
@@ -143,7 +175,7 @@ After=network.target syslog.target
 Wants=network.target
 [Service]
 Type=simple
-ExecStart=/root/easytier/easytier-core -w udp://cfgs.175419.xyz:22020/$USERNAME  --hostname $HOSTNAME 
+ExecStart=/root/easytier/easytier-core -w udp://${CONSOLE_HOST}:22020/$USERNAME  --hostname $HOSTNAME 
 Restart=always
 RestartSec=5
 # 关键配置：将输出定向到HDMI对应的物理控制台（tty1为默认第一个物理终端）
@@ -176,7 +208,7 @@ After=network.target syslog.target
 Wants=network.target
 [Service]
 Type=simple
-ExecStart=/root/easytier/easytier-core -w udp://cfgs.175419.xyz:22020/$USERNAME --hostname $HOSTNAME 
+ExecStart=/root/easytier/easytier-core -w udp://${CONSOLE_HOST}:22020/$USERNAME --hostname $HOSTNAME 
 Restart=always
 RestartSec=5
 # 关键配置：将输出定向到HDMI对应的物理控制台（tty1为默认第一个物理终端）
