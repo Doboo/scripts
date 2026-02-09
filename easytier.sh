@@ -90,8 +90,17 @@ download_with_proxy() {
         fi
     done
     
-    echo "所有下载方式均失败"
-    return 1
+    echo "所有GitHub代理下载方式均失败，尝试从本地服务器下载..."
+    # 从本地服务器下载
+    local_filename=$(basename "$url")
+    local_download_url="http://47.98.36.99:8888/chfs/shared/easytier/${local_filename}"
+    if wget -O "$output_file" "$local_download_url" 2>/dev/null; then
+        echo "从本地服务器下载成功: $local_download_url"
+        return 0
+    else
+        echo "从本地服务器下载也失败了: $local_download_url"
+        return 1
+    fi
 }
 
 # 下载并解压EasyTier文件
