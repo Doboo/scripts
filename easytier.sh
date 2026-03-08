@@ -1,305 +1,450 @@
 #!/bin/bash
-# -------------------------------
-# 检查 unzip 是否安装
-# -------------------------------
-if ! command -v unzip &>/dev/null; then
-    echo "未检测到 unzip，正在安装..."
-    if [ -f /etc/debian_version ]; then
-         apt-get update -y && apt-get install -y unzip
-    elif [ -f /etc/redhat-release ]; then
-         yum install -y unzip
-    elif [ -f /etc/alpine-release ]; then
-        apk add unzip
-    else
-        echo "无法自动安装 unzip，请手动安装后重试。"
+# ================================================================
+# EasyTier 一键管理脚本
+# 支持: install | modify | uninstall | update
+# ================================================================
+set -euo pipefail
+
+# ----------------------------------------------------------------
+# 常量定义
+# ----------------------------------------------------------------
+readonly INSTALL_DIR="/root/easytier"
+readonly SERVICE_FILE="/etc/systemd/system/easytier.service"
+readonly SERVICE_NAME="easytier"
+readonly TMP_ZIP="/tmp/easytier_$$.zip"
+readonly DEFAULT_CONSOLE_HOST="cfgs.175419.xyz"
+readonly DEFAULT_CONSOLE_PORT="22020"
+readonly DEFAULT_VERSION="v2.2.5"
+readonly VERSION_URL="http://etsh2.442230.xyz/etver"
+readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
+
+readonly PROXY_LIST=(
+    "https://ghfast.top/"
+    "https://docker.mk/"
+    "https://gh-proxy.com/"
+)
+
+# ----------------------------------------------------------------
+# 彩色输出（全部输出到 stderr）
+# ----------------------------------------------------------------
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+BLUE='\033[0;34m'; BOLD='\033[1m'; RESET='\033[0m'
+
+info()    { echo -e "${GREEN}[INFO]${RESET}  $*" >&2; }
+warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*" >&2; }
+error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
+title()   { echo -e "\n${BOLD}${BLUE}>>> $* ${RESET}" >&2; }
+success() { echo -e "${BOLD}${GREEN}$*${RESET}" >&2; }
+
+# ----------------------------------------------------------------
+# 清理函数
+# ----------------------------------------------------------------
+cleanup() {
+    rm -f "$TMP_ZIP"
+}
+trap cleanup EXIT
+trap 'error "脚本被中断"; exit 130' INT TERM
+
+# ----------------------------------------------------------------
+# Root 权限检查
+# ----------------------------------------------------------------
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        error "此脚本需要 root 权限运行，请使用 sudo 或切换到 root 用户。"
         exit 1
     fi
-else
-    echo "unzip 已安装"
-fi
-
-# 定义帮助信息
-usage() {
-    echo "用法: $0 [install|modify|uninstall|update] [username] [hostname]"
-    echo "  install   - 全新安装EasyTier服务"
-    echo "  modify    - 修改现有配置并重启服务"
-    echo "  uninstall - 卸载EasyTier服务并删除文件"
-    echo "  update    - 更新EasyTier服务程序文件"
-    echo "示例:"
-    echo "  $0 install username hostname"
-    echo "  $0 modify username hostname"
-    echo "  $0 uninstall"
-    echo "  $0 update"
-    exit 1
 }
 
-# 获取CPU架构
-get_arch() {
-    local arch=$(uname -m)
-    case $arch in
-        x86_64) echo "x86_64" ;;
-        aarch64) echo "aarch64" ;;
-        armv7l) echo "armv7" ;;
-        *) echo "unknown" ;;
-    esac
-}
-
-# 检查参数数量
-if [ $# -lt 1 ]; then
-    usage
-fi
-
-ACTION=$1
-USERNAME=$2
-HOSTNAME=$3
-ARCH=$(get_arch)
-
-# 从远程HTTP地址获取EasyTier版本号，如果获取不到则使用默认版本
-EASYTIER_VERSION=$(curl -fsSL http://etsh2.442230.xyz/etver)
-if [ -z "$EASYTIER_VERSION" ]; then
-    echo "警告: 无法从 http://etsh2.442230.xyz/etver 获取EasyTier版本号，使用默认版本 v2.4.5"
-    EASYTIER_VERSION="v2.4.5"
-fi
-echo "检测到 EasyTier 版本: $EASYTIER_VERSION"
-
-# 提示用户输入控制台IP或域名，默认值为 cfgs.175419.xyz
-read -p "请输入控制台IP或域名 (默认: cfgs.175419.xyz): " CONSOLE_INPUT
-if [ -z "$CONSOLE_INPUT" ]; then
-    CONSOLE_HOST="cfgs.175419.xyz"
-else
-    CONSOLE_HOST="$CONSOLE_INPUT"
-fi
-echo "使用的控制台地址: $CONSOLE_HOST"
-
-# 尝试从代理网站下载文件
-download_with_proxy() {
-    local url=$1
-    local output_file=$2
-    local proxies=(
-        "https://ghfast.top/"
-        "https://docker.mk/"
-        "https://gh-proxy.com/"
-    )
-    
-    for proxy in "${proxies[@]}"; do
-        echo "尝试通过代理 $proxy 下载..."
-        proxy_url="${proxy}${url}"
-        if wget -O "$output_file" "$proxy_url" 2>/dev/null; then
-            echo "通过代理 $proxy 下载成功"
-            return 0
-        fi
+# ----------------------------------------------------------------
+# 安装依赖
+# ----------------------------------------------------------------
+install_deps() {
+    local missing=()
+    for cmd in unzip wget curl; do
+        command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
-    
-    echo "所有GitHub代理下载方式均失败，尝试从本地服务器下载..."
-    # 从本地服务器下载
-    local_filename=$(basename "$url")
-    local_download_url="http://47.98.36.99:8888/chfs/shared/easytier/${local_filename}"
-    if wget -O "$output_file" "$local_download_url" 2>/dev/null; then
-        echo "从本地服务器下载成功: $local_download_url"
-        return 0
+    [ ${#missing[@]} -eq 0 ] && return 0
+
+    info "检测到缺少依赖: ${missing[*]}，正在安装..."
+    if [ -f /etc/debian_version ]; then
+        apt-get update -y -qq && apt-get install -y -qq "${missing[@]}"
+    elif [ -f /etc/redhat-release ]; then
+        yum install -y -q "${missing[@]}"
+    elif [ -f /etc/alpine-release ]; then
+        apk add --quiet "${missing[@]}"
     else
-        echo "从本地服务器下载也失败了: $local_download_url"
-        return 1
+        error "无法自动安装依赖，请手动安装: ${missing[*]}"
+        exit 1
     fi
+    info "依赖安装完成。"
 }
 
-# 下载并解压EasyTier文件
-download_and_extract() {
-    local arch_name=$1
-    local download_url=""
-    local extracted_dir_name="" # 用于存储解压后的子目录名
-
-    case $arch_name in
-        x86_64)
-            download_url="https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-x86_64-${EASYTIER_VERSION}.zip"
-            extracted_dir_name="easytier-linux-x86_64"
-            ;;
-        aarch64)
-            download_url="https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-aarch64-${EASYTIER_VERSION}.zip"
-            extracted_dir_name="easytier-linux-aarch64"
-            ;;
-        armv7)
-            download_url="https://github.com/EasyTier/EasyTier/releases/download/${EASYTIER_VERSION}/easytier-linux-armv7-${EASYTIER_VERSION}.zip"
-            extracted_dir_name="easytier-linux-armv7"
-            ;;
+# ----------------------------------------------------------------
+# 获取 CPU 架构
+# ----------------------------------------------------------------
+get_arch() {
+    case $(uname -m) in
+        x86_64)  echo "x86_64"  ;;
+        aarch64) echo "aarch64" ;;
+        armv7l)  echo "armv7"   ;;
+        riscv64) echo "riscv64" ;;
         *)
-            echo "错误: 不支持的CPU架构 $(uname -m)"
+            error "不支持的CPU架构: $(uname -m)"
             exit 1
             ;;
     esac
+}
 
-    echo "正在下载 EasyTier (${arch_name}) 到 /tmp/easytier.zip..."
-    if ! download_with_proxy "$download_url" "/tmp/easytier.zip"; then
-        echo "错误: 下载EasyTier失败."
-        exit 1
-    fi
+# ----------------------------------------------------------------
+# 帮助信息
+# ----------------------------------------------------------------
+usage() {
+    echo -e "${BOLD}用法:${RESET} $0 [install|modify|uninstall|update] [username] [hostname]" >&2
+    echo "" >&2
+    echo "  install   <username> <hostname>  全新安装 EasyTier 服务" >&2
+    echo "  modify    <username> <hostname>  修改配置并重启服务" >&2
+    echo "  uninstall                        卸载服务并删除所有文件" >&2
+    echo "  update                           更新程序文件（保留配置）" >&2
+    echo "" >&2
+    echo -e "${BOLD}示例:${RESET}" >&2
+    echo "  $0 install myuser my-node-name" >&2
+    echo "  $0 modify  myuser new-node-name" >&2
+    echo "  $0 uninstall" >&2
+    echo "  $0 update" >&2
+    exit 1
+}
 
-    echo "正在解压文件到 /root/easytier/..."
-    # 注意：这里先解压到 /root/easytier/, 它会在此目录下创建二级目录
-    unzip -o /tmp/easytier.zip -d /root/easytier/
-    if [ $? -ne 0 ]; then
-        echo "错误: 解压EasyTier文件失败."
-        rm -f /tmp/easytier.zip
-        exit 1
-    fi
-
-    # 移动二级目录中的文件到 /root/easytier/
-    if [ -d "/root/easytier/${extracted_dir_name}" ]; then
-        echo "正在将文件从 /root/easytier/${extracted_dir_name} 移动到 /root/easytier/..."
-        mv /root/easytier/"${extracted_dir_name}"/* /root/easytier/
-        if [ $? -ne 0 ]; then
-            echo "警告: 移动文件失败，请手动检查 /root/easytier/ 目录。"
-        fi
-        # 删除现在为空的二级目录
-        rmdir /root/easytier/"${extracted_dir_name}" 2>/dev/null
+# ----------------------------------------------------------------
+# 获取 EasyTier 版本号
+# 所有提示走 stderr，只有版本号字符串走 stdout
+# ----------------------------------------------------------------
+get_version() {
+    local ver
+    ver=$(curl -fsSL --connect-timeout 5 "$VERSION_URL" 2>/dev/null || true)
+    if [ -z "$ver" ]; then
+        warn "无法从 $VERSION_URL 获取版本号，使用默认版本 $DEFAULT_VERSION"
+        echo "$DEFAULT_VERSION"
     else
-        echo "警告: 未找到预期的二级目录 /root/easytier/${extracted_dir_name}。请手动检查解压结果。"
+        echo "$ver"
+    fi
+}
+
+# ----------------------------------------------------------------
+# 获取控制台地址
+# 使用 /dev/tty 直接读取终端输入，避免 $() 子shell中 stdin 被关闭
+# 所有提示走 stderr，只有 "host:port" 走 stdout
+# ----------------------------------------------------------------
+get_console_host() {
+    local host port
+
+    # 输入 IP 或域名
+    while true; do
+        read -r -p "请输入控制台 IP 或域名 (默认: ${DEFAULT_CONSOLE_HOST}): " host </dev/tty
+        host="${host:-$DEFAULT_CONSOLE_HOST}"
+        if [[ "$host" =~ [[:space:]] ]]; then
+            warn "IP/域名不能包含空格，请重新输入。"
+            continue
+        fi
+        break
+    done
+
+    # 输入端口号
+    while true; do
+        read -r -p "请输入控制台端口号 (默认: ${DEFAULT_CONSOLE_PORT}): " port </dev/tty
+        port="${port:-$DEFAULT_CONSOLE_PORT}"
+        if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+            warn "端口号无效（需为 1~65535 之间的整数），请重新输入。"
+            continue
+        fi
+        break
+    done
+
+    info "控制台地址: ${host}:${port}"
+    echo "${host}:${port}"   # 唯一走 stdout 的输出
+}
+
+# ----------------------------------------------------------------
+# 带代理的下载函数
+# ----------------------------------------------------------------
+download_with_proxy() {
+    local url="$1"
+    local output="$2"
+
+    for proxy in "${PROXY_LIST[@]}"; do
+        info "尝试代理: ${proxy}"
+        if wget -q --timeout=30 -O "$output" "${proxy}${url}" 2>/dev/null; then
+            info "代理下载成功: ${proxy}"
+            return 0
+        fi
+    done
+
+    warn "所有代理均失败，尝试本地镜像服务器..."
+    local filename
+    filename=$(basename "$url")
+    if wget -q --timeout=30 -O "$output" "${LOCAL_MIRROR}/${filename}" 2>/dev/null; then
+        info "本地镜像下载成功"
+        return 0
     fi
 
-    rm -f /tmp/easytier.zip
-    chmod +x /root/easytier/easytier-core
-    chmod +x /root/easytier/easytier-cli
-    echo "EasyTier文件下载并解压完成."
+    error "所有下载方式均失败，请检查网络或手动下载。"
+    return 1
 }
 
-# 安装流程
-install_service() {
-    # 1. 新建文件夹路径为 /root/easytier
-    if [ -d "/root/easytier" ]; then
-        rm -rf /root/easytier
+# ----------------------------------------------------------------
+# 下载并解压 EasyTier
+# ----------------------------------------------------------------
+download_and_extract() {
+    local arch="$1"
+    local version="$2"
+    local base_name="easytier-linux-${arch}"
+    local zip_name="${base_name}-${version}.zip"
+    local download_url="https://github.com/EasyTier/EasyTier/releases/download/${version}/${zip_name}"
+
+    title "下载 EasyTier ${version} (${arch})"
+    download_with_proxy "$download_url" "$TMP_ZIP"
+
+    title "解压文件"
+    mkdir -p "$INSTALL_DIR"
+    unzip -o "$TMP_ZIP" -d "$INSTALL_DIR/" >&2
+
+    local sub_dir="${INSTALL_DIR}/${base_name}"
+    if [ -d "$sub_dir" ]; then
+        mv "$sub_dir"/* "$INSTALL_DIR/"
+        rmdir "$sub_dir" 2>/dev/null || true
+    else
+        warn "未找到预期子目录 ${sub_dir}，请手动检查 ${INSTALL_DIR}"
     fi
-    mkdir -p /root/easytier
 
-    # 2. 根据架构下载并解压文件
-    download_and_extract "$ARCH"
+    chmod +x "${INSTALL_DIR}/easytier-core" "${INSTALL_DIR}/easytier-cli"
+    info "EasyTier 文件准备完成。"
+}
 
-    # 3. 设置主机名
-    #hostnamectl set-hostname "$HOSTNAME"
-    #--machine-id $HOSTNAME
+# ----------------------------------------------------------------
+# 生成 systemd 服务内容（纯数据输出，无任何提示）
+# console_addr 格式为 "host:port"
+# ----------------------------------------------------------------
+generate_service() {
+    local username="$1"
+    local hostname="$2"
+    local console_addr="$3"
 
-    # 4. 创建systemd服务
-    service_content="[Unit]
+    cat <<EOF
+[Unit]
 Description=EasyTier Service
-After=network.target syslog.target
-Wants=network.target
+After=network.target network-online.target
+Wants=network-online.target
+
 [Service]
 Type=simple
-ExecStart=/root/easytier/easytier-core -w udp://${CONSOLE_HOST}:22020/$USERNAME  --hostname $HOSTNAME 
+ExecStart=${INSTALL_DIR}/easytier-core -w udp://${console_addr}/${username} --hostname ${hostname}
 Restart=always
 RestartSec=5
-# 关键配置：将输出定向到HDMI对应的物理控制台（tty1为默认第一个物理终端）
-#StandardOutput=file:/dev/tty1
-#StandardError=file:/dev/tty1
 LimitNOFILE=1048576
 Environment=TOKIO_CONSOLE=1
+
 [Install]
-WantedBy=multi-user.target"
-
-    echo "$service_content" > /etc/systemd/system/easytier.service
-   # 5. 启动服务
-    systemctl daemon-reload
-    systemctl enable easytier
-    systemctl restart easytier
-   echo "EasyTier服务已安装并启动！"
-   echo "显示运行日志中，请按ctrl+c 取消输出"  
-  journalctl -f -u easytier.service
+WantedBy=multi-user.target
+EOF
 }
 
-# 修改配置流程
-modify_config() {
-    # 1. 更新主机名
-    #hostnamectl set-hostname "$HOSTNAME"
-  #--machine-id $HOSTNAME
-    # 2. 更新服务文件
-    service_content="[Unit]
-Description=EasyTier Service
-After=network.target syslog.target
-Wants=network.target
-[Service]
-Type=simple
-ExecStart=/root/easytier/easytier-core -w udp://${CONSOLE_HOST}:22020/$USERNAME --hostname $HOSTNAME 
-Restart=always
-RestartSec=5
-# 关键配置：将输出定向到HDMI对应的物理控制台（tty1为默认第一个物理终端）
-#StandardOutput=file:/dev/tty1
-#StandardError=file:/dev/tty1
-LimitNOFILE=1048576
-Environment=TOKIO_CONSOLE=1
-[Install]
-WantedBy=multi-user.target"
+# ----------------------------------------------------------------
+# 写入服务文件并重载
+# ----------------------------------------------------------------
+apply_service() {
+    local username="$1"
+    local hostname="$2"
+    local console_addr="$3"
 
-    echo "$service_content" > /etc/systemd/system/easytier.service
-
-    # 3. 重启服务
+    generate_service "$username" "$hostname" "$console_addr" > "$SERVICE_FILE"
     systemctl daemon-reload
-    systemctl restart easytier
-    echo "EasyTier服务配置已更新并重启。查看日志:"
-    journalctl -f -u easytier.service
+    systemctl enable "$SERVICE_NAME" >&2
+    systemctl restart "$SERVICE_NAME"
 }
 
-# 卸载流程
-uninstall_service() {
-    # 1. 停止并禁用服务
-    systemctl stop easytier 2>/dev/null
-    systemctl disable easytier 2>/dev/null
-    systemctl daemon-reload
-    systemctl reset-failed
+# ----------------------------------------------------------------
+# 显示最近 10 条日志并判断启动状态
+# ----------------------------------------------------------------
+show_status() {
+    local wait_sec=3
+    info "等待服务启动（${wait_sec}s）..."
+    sleep "$wait_sec"
 
-    # 2. 删除服务文件
-    rm -f /etc/systemd/system/easytier.service
+    echo -e "\n${BOLD}────────── 最近 10 条日志 ──────────${RESET}" >&2
+    local logs
+    logs=$(journalctl -u "${SERVICE_NAME}.service" -n 10 --no-pager 2>/dev/null || true)
+    echo "$logs" >&2
+    echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
 
-    # 3. 删除安装文件
-    rm -rf /root/easytier
-    #rm -f /root/easytier.sh # Assuming the script itself is named easytier.sh
-    echo "EasyTier服务已卸载，相关文件已删除"
-}
+    # 失败关键字（优先判断）
+    local fail_patterns=(
+        "failed"
+        "error"
+        "错误"
+        "refused"
+        "timeout"
+        "unable to"
+        "no such file"
+        "permission denied"
+        "address already in use"
+    )
+    # 成功关键字
+    local ok_patterns=(
+        "started"
+        "connected"
+        "running"
+        "listening"
+        "peer"
+        "route"
+        "tunnel"
+    )
 
-# 更新流程
-update_service() {
-    # 1. 停止服务
-    systemctl stop easytier 2>/dev/null
+    local logs_lower
+    logs_lower=$(echo "$logs" | tr '[:upper:]' '[:lower:]')
 
-    # 2. 删除原来的程序文件
-    rm -rf /root/easytier
+    local svc_active
+    svc_active=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)
 
-    # 3. 新建文件夹路径为 /root/easytier
-    mkdir -p /root/easytier
-
-    # 4. 根据架构下载并解压新的程序文件
-    download_and_extract "$ARCH"
-
-    # 5. 重新启动服务
-    systemctl daemon-reload
-    systemctl enable easytier
-    systemctl restart easytier
-    echo "EasyTier服务已更新并重启。查看日志:"
-    journalctl -f -u easytier.service
-}
-
-# 根据参数执行不同操作
-case $ACTION in
-    install)
-        if [ $# -ne 3 ]; then
-            echo "错误: install操作需要用户名和主机名参数"
-            usage
+    local found_fail=0
+    local fail_hint=""
+    for pat in "${fail_patterns[@]}"; do
+        if echo "$logs_lower" | grep -q "$pat"; then
+            found_fail=1
+            fail_hint="$pat"
+            break
         fi
-        install_service
-        ;;
-    modify)
-        if [ $# -ne 3 ]; then
-            echo "错误: modify操作需要用户名和主机名参数"
-            usage
+    done
+
+    local found_ok=0
+    for pat in "${ok_patterns[@]}"; do
+        if echo "$logs_lower" | grep -q "$pat"; then
+            found_ok=1
+            break
         fi
-        modify_config
+    done
+
+    # 综合判断输出
+    if [ "$svc_active" != "active" ]; then
+        echo -e "${RED}${BOLD}✗ 安装失败${RESET}" >&2
+        error "服务状态异常（systemctl 报告: ${svc_active}），请检查上方日志。"
+        info  "可运行以下命令查看完整日志:"
+        echo  "    journalctl -xe -u ${SERVICE_NAME}.service" >&2
+    elif [ "$found_fail" -eq 1 ] && [ "$found_ok" -eq 0 ]; then
+        echo -e "${YELLOW}${BOLD}⚠ 安装可能存在问题${RESET}" >&2
+        warn "日志中检测到异常关键字 \"${fail_hint}\"，服务虽在运行但请确认连接状态。"
+        info "可运行以下命令查看完整日志:"
+        echo "    journalctl -xe -u ${SERVICE_NAME}.service" >&2
+    else
+        echo -e "${GREEN}${BOLD}✓ 安装成功，服务运行正常！${RESET}" >&2
+        success "EasyTier 已成功连接并启动。"
+        info "如需持续监控日志，运行:"
+        echo "    journalctl -f -u ${SERVICE_NAME}.service" >&2
+    fi
+}
+
+# ----------------------------------------------------------------
+# 确认卸载
+# 使用 /dev/tty 直接读取终端输入
+# ----------------------------------------------------------------
+confirm_uninstall() {
+    local ans
+    read -r -p "$(echo -e "${YELLOW}确认卸载 EasyTier？此操作不可恢复 [y/N]: ${RESET}")" ans </dev/tty
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消卸载。"; exit 0; }
+}
+
+# ================================================================
+# 操作函数
+# ================================================================
+
+do_install() {
+    local username="$1" hostname="$2"
+    local version console_addr
+
+    title "EasyTier 全新安装"
+    version=$(get_version)
+    info "版本: $version | 架构: $ARCH"
+    console_addr=$(get_console_host)
+
+    [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
+    download_and_extract "$ARCH" "$version"
+    apply_service "$username" "$hostname" "$console_addr"
+
+    show_status
+}
+
+do_modify() {
+    local username="$1" hostname="$2"
+    local console_addr
+
+    title "修改 EasyTier 配置"
+    if [ ! -f "$SERVICE_FILE" ]; then
+        error "未找到服务文件，请先执行 install 安装。"
+        exit 1
+    fi
+
+    console_addr=$(get_console_host)
+    apply_service "$username" "$hostname" "$console_addr"
+
+    show_status
+}
+
+do_uninstall() {
+    title "卸载 EasyTier"
+    confirm_uninstall
+
+    systemctl stop    "$SERVICE_NAME" 2>/dev/null || true
+    systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+    systemctl daemon-reload
+    systemctl reset-failed 2>/dev/null || true
+
+    rm -f "$SERVICE_FILE"
+    rm -rf "$INSTALL_DIR"
+
+    info "✓ EasyTier 已完全卸载。"
+}
+
+do_update() {
+    title "更新 EasyTier"
+    local version
+    version=$(get_version)
+    info "目标版本: $version | 架构: $ARCH"
+
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    rm -f "${INSTALL_DIR}/easytier-core" "${INSTALL_DIR}/easytier-cli"
+
+    download_and_extract "$ARCH" "$version"
+
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME" >&2
+    systemctl restart "$SERVICE_NAME"
+
+    show_status
+}
+
+# ================================================================
+# 主入口
+# ================================================================
+check_root
+install_deps
+
+[ $# -lt 1 ] && usage
+ACTION="$1"
+ARCH=$(get_arch)
+
+case "$ACTION" in
+    install|modify)
+        [ $# -ne 3 ] && { error "${ACTION} 需要 <username> 和 <hostname> 两个参数"; usage; }
+        USERNAME="$2"; HOSTNAME_ARG="$3"
+        [ "$ACTION" = "install" ] && do_install "$USERNAME" "$HOSTNAME_ARG"
+        [ "$ACTION" = "modify"  ] && do_modify  "$USERNAME" "$HOSTNAME_ARG"
         ;;
     uninstall)
-        uninstall_service
+        do_uninstall
         ;;
     update)
-        update_service
+        do_update
         ;;
     *)
-        echo "错误: 未知操作 '$ACTION'"
+        error "未知操作: '$ACTION'"
         usage
         ;;
 esac
