@@ -262,16 +262,16 @@ apply_service() {
 }
 
 # ----------------------------------------------------------------
-# 显示最近 30 条日志并判断启动状态
+# 显示最近 15 条日志并判断启动状态
 # ----------------------------------------------------------------
 show_status() {
     local wait_sec=3
     info "等待服务启动（${wait_sec}s）..."
     sleep "$wait_sec"
 
-    echo -e "\n${BOLD}────────── 最近 30 条日志 ──────────${RESET}" >&2
+    echo -e "\n${BOLD}────────── 最近 15 条日志 ──────────${RESET}" >&2
     local logs
-    logs=$(journalctl -u "${SERVICE_NAME}.service" -n 30 --no-pager 2>/dev/null || true)
+    logs=$(journalctl -u "${SERVICE_NAME}.service" -n 15 --no-pager 2>/dev/null || true)
     echo "$logs" >&2
     echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
 
