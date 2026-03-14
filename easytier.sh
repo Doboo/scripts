@@ -11,7 +11,6 @@ set -euo pipefail
 readonly INSTALL_DIR="/root/easytier"
 readonly SERVICE_FILE="/etc/systemd/system/easytier.service"
 readonly SERVICE_NAME="easytier"
-readonly TMP_ZIP="/tmp/easytier_$$.zip"
 readonly DEFAULT_CONSOLE_HOST="cfgs.175419.xyz"
 readonly DEFAULT_CONSOLE_PORT="22020"
 readonly DEFAULT_VERSION="v2.4.5"
@@ -25,10 +24,14 @@ readonly PROXY_LIST=(
 )
 
 # ----------------------------------------------------------------
-# 彩色输出（全部输出到 stderr）
+# 彩色输出（修复：使用 $'...' 语法避免双重转义）
 # ----------------------------------------------------------------
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
-BLUE='\033[0;34m'; BOLD='\033[1m'; RESET='\033[0m'
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'
+BOLD=$'\033[1m'
+RESET=$'\033[0m'
 
 info()    { echo -e "${GREEN}[INFO]${RESET}  $*" >&2; }
 warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*" >&2; }
@@ -37,7 +40,12 @@ title()   { echo -e "\n${BOLD}${BLUE}>>> $* ${RESET}" >&2; }
 success() { echo -e "${BOLD}${GREEN}$*${RESET}" >&2; }
 
 # ----------------------------------------------------------------
-# 清理函数
+# 临时文件（修复：使用 mktemp 替代 PID 命名，避免竞争条件）
+# ----------------------------------------------------------------
+TMP_ZIP=$(mktemp /tmp/easytier_XXXXXX.zip)
+
+# ----------------------------------------------------------------
+# 清理与信号处理
 # ----------------------------------------------------------------
 cleanup() {
     rm -f "$TMP_ZIP"
@@ -99,30 +107,29 @@ get_arch() {
 # 帮助信息
 # ----------------------------------------------------------------
 usage() {
-    echo -e "${BOLD}用法:${RESET} $0 [install|modify|uninstall|update] [username] [hostname]" >&2
-    echo "" >&2
-    echo "  install   <username> <hostname>  全新安装 EasyTier 服务" >&2
-    echo "  modify    <username> <hostname>  修改配置并重启服务" >&2
-    echo "  uninstall                        卸载服务并删除所有文件" >&2
-    echo "  update                           更新程序文件（保留配置）" >&2
-    echo "" >&2
-    echo -e "${BOLD}示例:${RESET}" >&2
-    echo "  $0 install myuser my-node-name" >&2
-    echo "  $0 modify  myuser new-node-name" >&2
-    echo "  $0 uninstall" >&2
-    echo "  $0 update" >&2
+    printf "${BOLD}用法:${RESET} %s [install|modify|uninstall|update] [username] [hostname]\n\n" "$0" >&2
+    printf "  install   <username> <hostname>  全新安装 EasyTier 服务\n" >&2
+    printf "  modify    <username> <hostname>  修改配置并重启服务\n" >&2
+    printf "  uninstall                        卸载服务并删除所有文件\n" >&2
+    printf "  update                           更新程序文件（保留配置）\n\n" >&2
+    printf "${BOLD}示例:${RESET}\n" >&2
+    printf "  %s install myuser my-node-name\n" "$0" >&2
+    printf "  %s modify  myuser new-node-name\n" "$0" >&2
+    printf "  %s uninstall\n" "$0" >&2
+    printf "  %s update\n" "$0" >&2
     exit 1
 }
 
 # ----------------------------------------------------------------
-# 获取 EasyTier 版本号
-# 所有提示走 stderr，只有版本号字符串走 stdout
+# 获取 EasyTier 版本号（修复：增加格式校验，防止返回 HTML 等异常内容）
 # ----------------------------------------------------------------
 get_version() {
     local ver
-    ver=$(curl -fsSL --connect-timeout 5 "$VERSION_URL" 2>/dev/null || true)
-    if [ -z "$ver" ]; then
-        warn "无法从 $VERSION_URL 获取版本号，使用默认版本 $DEFAULT_VERSION"
+    ver=$(curl -fsSL --connect-timeout 5 "$VERSION_URL" 2>/dev/null | tr -d '[:space:]' || true)
+
+    # 校验版本号格式必须为 vX.Y.Z
+    if [[ ! "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        warn "从 $VERSION_URL 获取的版本号无效（'${ver}'），使用默认版本 $DEFAULT_VERSION"
         echo "$DEFAULT_VERSION"
     else
         echo "$ver"
@@ -130,16 +137,14 @@ get_version() {
 }
 
 # ----------------------------------------------------------------
-# 获取控制台地址
-# 使用 /dev/tty 直接读取终端输入，避免 $() 子shell中 stdin 被关闭
-# 所有提示走 stderr，只有 "host:port" 走 stdout
+# 获取控制台地址（修复：使用 printf 替代 echo -e 内嵌在 $() 中）
 # ----------------------------------------------------------------
 get_console_host() {
     local host port
 
-    # 输入 IP 或域名
     while true; do
-        read -r -p "请输入控制台 IP 或域名 (默认: ${DEFAULT_CONSOLE_HOST}): " host </dev/tty
+        printf "请输入控制台 IP 或域名 (默认: %s): " "${DEFAULT_CONSOLE_HOST}" >&2
+        read -r host </dev/tty
         host="${host:-$DEFAULT_CONSOLE_HOST}"
         if [[ "$host" =~ [[:space:]] ]]; then
             warn "IP/域名不能包含空格，请重新输入。"
@@ -148,9 +153,9 @@ get_console_host() {
         break
     done
 
-    # 输入端口号
     while true; do
-        read -r -p "请输入控制台端口号 (默认: ${DEFAULT_CONSOLE_PORT}): " port </dev/tty
+        printf "请输入控制台端口号 (默认: %s): " "${DEFAULT_CONSOLE_PORT}" >&2
+        read -r port </dev/tty
         port="${port:-$DEFAULT_CONSOLE_PORT}"
         if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
             warn "端口号无效（需为 1~65535 之间的整数），请重新输入。"
@@ -160,11 +165,11 @@ get_console_host() {
     done
 
     info "控制台地址: ${host}:${port}"
-    echo "${host}:${port}"   # 唯一走 stdout 的输出
+    echo "${host}:${port}"
 }
 
 # ----------------------------------------------------------------
-# 带代理的下载函数
+# 带代理的下载函数（修复：本地镜像路径包含版本子目录）
 # ----------------------------------------------------------------
 download_with_proxy() {
     local url="$1"
@@ -179,9 +184,10 @@ download_with_proxy() {
     done
 
     warn "所有代理均失败，尝试本地镜像服务器..."
-    local filename
-    filename=$(basename "$url")
-    if wget -q --timeout=30 -O "$output" "${LOCAL_MIRROR}/${filename}" 2>/dev/null; then
+    # 从 URL 中提取 "版本号/文件名" 两级路径，与镜像目录结构对齐
+    local rel_path
+    rel_path=$(echo "$url" | grep -oP 'download/\K.*')   # e.g. v2.4.5/easytier-linux-x86_64-v2.4.5.zip
+    if wget -q --timeout=30 -O "$output" "${LOCAL_MIRROR}/${rel_path}" 2>/dev/null; then
         info "本地镜像下载成功"
         return 0
     fi
@@ -191,7 +197,7 @@ download_with_proxy() {
 }
 
 # ----------------------------------------------------------------
-# 下载并解压 EasyTier
+# 下载并解压 EasyTier（修复：解压目录处理更健壮，空目录 glob 保护）
 # ----------------------------------------------------------------
 download_and_extract() {
     local arch="$1"
@@ -209,23 +215,34 @@ download_and_extract() {
 
     local sub_dir="${INSTALL_DIR}/${base_name}"
     if [ -d "$sub_dir" ]; then
-        mv "$sub_dir"/* "$INSTALL_DIR/"
+        # 修复：先检查目录非空再 mv，避免 glob 展开失败
+        local file_count
+        file_count=$(find "$sub_dir" -maxdepth 1 -mindepth 1 | wc -l)
+        if [ "$file_count" -gt 0 ]; then
+            find "$sub_dir" -maxdepth 1 -mindepth 1 -exec mv -t "$INSTALL_DIR/" {} +
+        fi
         rmdir "$sub_dir" 2>/dev/null || true
     else
         warn "未找到预期子目录 ${sub_dir}，请手动检查 ${INSTALL_DIR}"
     fi
 
+    # 校验二进制文件确实存在后再 chmod
+    for bin in easytier-core easytier-cli; do
+        if [ ! -f "${INSTALL_DIR}/${bin}" ]; then
+            error "解压后未找到 ${bin}，安装包可能损坏。"
+            return 1
+        fi
+    done
     chmod +x "${INSTALL_DIR}/easytier-core" "${INSTALL_DIR}/easytier-cli"
     info "EasyTier 文件准备完成。"
 }
 
 # ----------------------------------------------------------------
-# 生成 systemd 服务内容（纯数据输出，无任何提示）
-# console_addr 格式为 "host:port"
+# 生成 systemd 服务内容（修复：hostname/username 用引号包裹防注入）
 # ----------------------------------------------------------------
 generate_service() {
     local username="$1"
-    local hostname="$2"
+    local node_hostname="$2"
     local console_addr="$3"
 
     cat <<EOF
@@ -236,7 +253,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/easytier-core -w udp://${console_addr}/${username} --hostname ${hostname}
+ExecStart=${INSTALL_DIR}/easytier-core -w "udp://${console_addr}/${username}" --hostname "${node_hostname}"
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
@@ -248,21 +265,24 @@ EOF
 }
 
 # ----------------------------------------------------------------
-# 写入服务文件并重载
+# 写入服务文件并重载（修复：统一重定向）
 # ----------------------------------------------------------------
 apply_service() {
     local username="$1"
-    local hostname="$2"
+    local node_hostname="$2"
     local console_addr="$3"
 
-    generate_service "$username" "$hostname" "$console_addr" > "$SERVICE_FILE"
+    generate_service "$username" "$node_hostname" "$console_addr" > "$SERVICE_FILE"
     systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" >&2
-    systemctl restart "$SERVICE_NAME"
+    systemctl enable "$SERVICE_NAME" 2>&1 | while IFS= read -r line; do
+        info "$line"
+    done
+    systemctl restart "$SERVICE_NAME" 2>/dev/null
 }
 
 # ----------------------------------------------------------------
 # 显示最近 15 条日志并判断启动状态
+# （修复：仅依赖 systemctl is-active，日志关键字仅作辅助警告）
 # ----------------------------------------------------------------
 show_status() {
     local wait_sec=3
@@ -270,84 +290,48 @@ show_status() {
     sleep "$wait_sec"
 
     echo -e "\n${BOLD}────────── 最近 15 条日志 ──────────${RESET}" >&2
-    local logs
-    logs=$(journalctl -u "${SERVICE_NAME}.service" -n 15 --no-pager 2>/dev/null || true)
-    echo "$logs" >&2
+    journalctl -u "${SERVICE_NAME}.service" -n 15 --no-pager 2>/dev/null || true
     echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
-
-    # 失败关键字（优先判断）
-    local fail_patterns=(
-        "failed"
-        "error"
-        "错误"
-        "refused"
-        "timeout"
-        "unable to"
-        "no such file"
-        "permission denied"
-        "address already in use"
-    )
-    # 成功关键字
-    local ok_patterns=(
-        "started"
-        "connected"
-        "running"
-        "listening"
-        "peer"
-        "route"
-        "tunnel"
-    )
-
-    local logs_lower
-    logs_lower=$(echo "$logs" | tr '[:upper:]' '[:lower:]')
 
     local svc_active
     svc_active=$(systemctl is-active "$SERVICE_NAME" 2>/dev/null || true)
 
-    local found_fail=0
-    local fail_hint=""
-    for pat in "${fail_patterns[@]}"; do
-        if echo "$logs_lower" | grep -q "$pat"; then
-            found_fail=1
-            fail_hint="$pat"
-            break
-        fi
-    done
-
-    local found_ok=0
-    for pat in "${ok_patterns[@]}"; do
-        if echo "$logs_lower" | grep -q "$pat"; then
-            found_ok=1
-            break
-        fi
-    done
-
-    # 综合判断输出
     if [ "$svc_active" != "active" ]; then
         echo -e "${RED}${BOLD}✗ 安装失败${RESET}" >&2
         error "服务状态异常（systemctl 报告: ${svc_active}），请检查上方日志。"
         info  "可运行以下命令查看完整日志:"
         echo  "    journalctl -xe -u ${SERVICE_NAME}.service" >&2
-    elif [ "$found_fail" -eq 1 ] && [ "$found_ok" -eq 0 ]; then
-        echo -e "${YELLOW}${BOLD}⚠ 安装可能存在问题${RESET}" >&2
-        warn "日志中检测到异常关键字 \"${fail_hint}\"，服务虽在运行但请确认连接状态。"
-        info "可运行以下命令查看完整日志:"
-        echo "    journalctl -xe -u ${SERVICE_NAME}.service" >&2
-    else
-        echo -e "${GREEN}${BOLD}✓ 安装成功，服务运行正常！${RESET}" >&2
-        success "EasyTier 已成功连接并启动。"
-        info "如需持续监控日志，运行:"
-        echo "    journalctl -f -u ${SERVICE_NAME}.service" >&2
+        return 1
     fi
+
+    # 仅在服务已 active 时，将日志关键字作为辅助警告（不影响成功判断）
+    local logs logs_lower
+    logs=$(journalctl -u "${SERVICE_NAME}.service" -n 15 --no-pager 2>/dev/null || true)
+    logs_lower=$(echo "$logs" | tr '[:upper:]' '[:lower:]')
+
+    local warn_patterns=("refused" "timeout" "unable to" "no such file" "permission denied" "address already in use")
+    for pat in "${warn_patterns[@]}"; do
+        if echo "$logs_lower" | grep -q "$pat"; then
+            warn "日志中检测到异常关键字 \"${pat}\"，服务虽在运行但请确认连接状态。"
+            info "可运行以下命令查看完整日志:"
+            echo "    journalctl -xe -u ${SERVICE_NAME}.service" >&2
+            return 0
+        fi
+    done
+
+    echo -e "${GREEN}${BOLD}✓ 安装成功，服务运行正常！${RESET}" >&2
+    success "EasyTier 已成功连接并启动。"
+    info "如需持续监控日志，运行:"
+    echo "    journalctl -f -u ${SERVICE_NAME}.service" >&2
 }
 
 # ----------------------------------------------------------------
-# 确认卸载
-# 使用 /dev/tty 直接读取终端输入
+# 确认卸载（修复：使用 printf 替代 echo -e 嵌套在 $()）
 # ----------------------------------------------------------------
 confirm_uninstall() {
     local ans
-    read -r -p "$(echo -e "${YELLOW}确认卸载 EasyTier？此操作不可恢复 [y/N]: ${RESET}")" ans </dev/tty
+    printf "${YELLOW}确认卸载 EasyTier？此操作不可恢复 [y/N]: ${RESET}" >&2
+    read -r ans </dev/tty
     [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消卸载。"; exit 0; }
 }
 
@@ -356,7 +340,7 @@ confirm_uninstall() {
 # ================================================================
 
 do_install() {
-    local username="$1" hostname="$2"
+    local username="$1" node_hostname="$2"
     local version console_addr
 
     title "EasyTier 全新安装"
@@ -366,13 +350,13 @@ do_install() {
 
     [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
     download_and_extract "$ARCH" "$version"
-    apply_service "$username" "$hostname" "$console_addr"
+    apply_service "$username" "$node_hostname" "$console_addr"
 
     show_status
 }
 
 do_modify() {
-    local username="$1" hostname="$2"
+    local username="$1" node_hostname="$2"
     local console_addr
 
     title "修改 EasyTier 配置"
@@ -380,9 +364,14 @@ do_modify() {
         error "未找到服务文件，请先执行 install 安装。"
         exit 1
     fi
+    # 修复：同时校验二进制文件是否存在
+    if [ ! -f "${INSTALL_DIR}/easytier-core" ]; then
+        error "未找到 easytier-core，程序文件可能已损坏，请先执行 update 或 install。"
+        exit 1
+    fi
 
     console_addr=$(get_console_host)
-    apply_service "$username" "$hostname" "$console_addr"
+    apply_service "$username" "$node_hostname" "$console_addr"
 
     show_status
 }
@@ -408,13 +397,31 @@ do_update() {
     version=$(get_version)
     info "目标版本: $version | 架构: $ARCH"
 
-    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-    rm -f "${INSTALL_DIR}/easytier-core" "${INSTALL_DIR}/easytier-cli"
+    # 修复：备份旧二进制，下载失败时自动回滚，保证服务可恢复
+    local backup_dir
+    backup_dir=$(mktemp -d /tmp/easytier_backup_XXXXXX)
+    trap 'rm -rf "$backup_dir"' RETURN
 
-    download_and_extract "$ARCH" "$version"
+    for bin in easytier-core easytier-cli; do
+        [ -f "${INSTALL_DIR}/${bin}" ] && cp "${INSTALL_DIR}/${bin}" "${backup_dir}/"
+    done
+
+    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+
+    if ! download_and_extract "$ARCH" "$version"; then
+        warn "下载失败，正在回滚到备份版本..."
+        for bin in easytier-core easytier-cli; do
+            [ -f "${backup_dir}/${bin}" ] && cp "${backup_dir}/${bin}" "${INSTALL_DIR}/"
+        done
+        systemctl start "$SERVICE_NAME" 2>/dev/null || true
+        error "更新失败，已回滚到旧版本，服务已恢复。"
+        exit 1
+    fi
 
     systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" >&2
+    systemctl enable "$SERVICE_NAME" 2>&1 | while IFS= read -r line; do
+        info "$line"
+    done
     systemctl restart "$SERVICE_NAME"
 
     show_status
@@ -434,6 +441,15 @@ case "$ACTION" in
     install|modify)
         [ $# -ne 3 ] && { error "${ACTION} 需要 <username> 和 <hostname> 两个参数"; usage; }
         USERNAME="$2"; HOSTNAME_ARG="$3"
+        # 修复：参数格式校验，防止含特殊字符破坏 service 文件
+        if [[ "$USERNAME" =~ [[:space:]/\\] ]]; then
+            error "username 不能包含空格或斜杠"
+            exit 1
+        fi
+        if [[ "$HOSTNAME_ARG" =~ [[:space:]/\\] ]]; then
+            error "hostname 不能包含空格或斜杠"
+            exit 1
+        fi
         [ "$ACTION" = "install" ] && do_install "$USERNAME" "$HOSTNAME_ARG"
         [ "$ACTION" = "modify"  ] && do_modify  "$USERNAME" "$HOSTNAME_ARG"
         ;;
