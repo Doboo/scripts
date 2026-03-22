@@ -6,7 +6,7 @@ set -e
 # 然后将 URL 填入下方变量，留空则自动从 GitHub 下载
 # 示例: SOURCE_ZIP_URL="http://192.168.1.100:8080/SoftEtherVPN.zip"
 # ============================================================
-SOURCE_ZIP_URL="http://47.98.36.99:8888/chfs/shared/softether/SoftEtherVPN-master.zip"
+SOURCE_ZIP_URL="http://47.98.36.99:8888/chfs/shared/softether/SoftEtherVPN.zip"
 # ============================================================
 
 if [[ $EUID -ne 0 ]]; then
