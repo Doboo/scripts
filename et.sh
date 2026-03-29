@@ -53,7 +53,7 @@ run_cmd() {
     local cmd="$1"
     local label="$2"
     echo "执行${label}：${cmd}"
-    if bash -c "$cmd"; then
+    if sh -c "$cmd"; then
         echo "${label}执行成功！"
     else
         echo "!!! ${label}执行失败！"
