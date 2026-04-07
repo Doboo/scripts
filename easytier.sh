@@ -13,8 +13,6 @@ readonly SERVICE_FILE="/etc/systemd/system/easytier.service"
 readonly SERVICE_NAME="easytier"
 readonly DEFAULT_CONSOLE_HOST="cfgs.175419.xyz"
 readonly DEFAULT_CONSOLE_PORT="22020"
-readonly DEFAULT_VERSION="v2.4.5"
-readonly VERSION_URL="http://etsh2.442230.xyz/etver"
 readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
 
 readonly PROXY_LIST=(
