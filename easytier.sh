@@ -13,6 +13,7 @@ readonly SERVICE_FILE="/etc/systemd/system/easytier.service"
 readonly SERVICE_NAME="easytier"
 readonly DEFAULT_CONSOLE_HOST="cfgs.175419.xyz"
 readonly DEFAULT_CONSOLE_PORT="22020"
+readonly DEFAULT_VERSION="v2.4.5"
 readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
 
 readonly PROXY_LIST=(
@@ -22,7 +23,7 @@ readonly PROXY_LIST=(
 )
 
 # ----------------------------------------------------------------
-# 彩色输出（修复：使用 $'...' 语法避免双重转义）
+# 彩色输出
 # ----------------------------------------------------------------
 RED=$'\033[0;31m'
 GREEN=$'\033[0;32m'
@@ -38,7 +39,7 @@ title()   { echo -e "\n${BOLD}${BLUE}>>> $* ${RESET}" >&2; }
 success() { echo -e "${BOLD}${GREEN}$*${RESET}" >&2; }
 
 # ----------------------------------------------------------------
-# 临时文件（修复：使用 mktemp 替代 PID 命名，避免竞争条件）
+# 临时文件
 # ----------------------------------------------------------------
 TMP_ZIP=$(mktemp /tmp/easytier_XXXXXX.zip)
 
@@ -146,7 +147,6 @@ get_version() {
                 while true; do
                     printf "请输入版本号（不带 v，例如 2.5.1）: " >&2
                     read -r ver </dev/tty
-                    # 校验格式：X.Y.Z 纯数字点分隔
                     if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                         ver="v${ver}"
                         break
@@ -167,7 +167,44 @@ get_version() {
 }
 
 # ----------------------------------------------------------------
-# 获取控制台地址（修复：使用 printf 替代 echo -e 内嵌在 $() 中）
+# 选择下载方式
+# ----------------------------------------------------------------
+choose_download_method() {
+    local choice
+
+    while true; do
+        printf "\n请选择下载方式:\n" >&2
+        printf "  ${BOLD}1)${RESET} 本地镜像服务器下载（默认，推荐）\n" >&2
+        printf "     地址: ${BLUE}${LOCAL_MIRROR}${RESET}\n" >&2
+        printf "  ${BOLD}2)${RESET} GitHub 代理下载（ghfast.top / docker.mk / gh-proxy.com）\n" >&2
+        printf "  ${BOLD}3)${RESET} 直接从 GitHub 下载（需能直连 github.com）\n" >&2
+        printf "     地址: ${BLUE}https://github.com/EasyTier/EasyTier/releases${RESET}\n" >&2
+        printf "请输入选项 [1/2/3]（默认: 1）: " >&2
+        read -r choice </dev/tty
+        choice="${choice:-1}"
+
+        case "$choice" in
+            1)
+                echo "local"
+                return 0
+                ;;
+            2)
+                echo "proxy"
+                return 0
+                ;;
+            3)
+                echo "direct"
+                return 0
+                ;;
+            *)
+                warn "无效选项 '${choice}'，请输入 1、2 或 3。"
+                ;;
+        esac
+    done
+}
+
+# ----------------------------------------------------------------
+# 获取控制台地址
 # ----------------------------------------------------------------
 get_console_host() {
     local host port
@@ -199,44 +236,81 @@ get_console_host() {
 }
 
 # ----------------------------------------------------------------
-# 带代理的下载函数（修复：本地镜像路径包含版本子目录）
+# 通过本地镜像下载
 # ----------------------------------------------------------------
-download_with_proxy() {
-    local url="$1"
+download_from_local() {
+    local rel_path="$1"   # e.g. v2.4.5/easytier-linux-x86_64-v2.4.5.zip
     local output="$2"
+    local url="${LOCAL_MIRROR}/${rel_path}"
 
-    for proxy in "${PROXY_LIST[@]}"; do
-        info "尝试代理: ${proxy}"
-        if wget -q --timeout=30 -O "$output" "${proxy}${url}" 2>/dev/null; then
-            info "代理下载成功: ${proxy}"
-            return 0
-        fi
-    done
-
-    warn "所有代理均失败，尝试本地镜像服务器..."
-    local rel_path
-    rel_path=$(echo "$url" | grep -oP 'download/\K.*')
-    if wget -q --timeout=30 -O "$output" "${LOCAL_MIRROR}/${rel_path}" 2>/dev/null; then
-        info "本地镜像下载成功"
+    info "从本地镜像下载: ${url}"
+    if wget -q --timeout=30 -O "$output" "$url" 2>/dev/null; then
+        info "本地镜像下载成功。"
         return 0
     fi
 
-    error "所有下载方式均失败，请检查网络或手动下载。"
+    error "本地镜像下载失败，请检查网络或服务器状态。"
     return 1
 }
 
 # ----------------------------------------------------------------
-# 下载并解压 EasyTier（修复：解压目录处理更健壮，空目录 glob 保护）
+# 通过 GitHub 代理下载
+# ----------------------------------------------------------------
+download_from_proxy() {
+    local github_url="$1"   # 完整 GitHub URL
+    local output="$2"
+
+    for proxy in "${PROXY_LIST[@]}"; do
+        info "尝试代理: ${proxy}"
+        if wget -q --timeout=30 -O "$output" "${proxy}${github_url}" 2>/dev/null; then
+            info "代理下载成功: ${proxy}"
+            return 0
+        fi
+        warn "代理 ${proxy} 失败，尝试下一个..."
+    done
+
+    error "所有代理均失败，请检查网络或改用本地镜像下载。"
+    return 1
+}
+
+# ----------------------------------------------------------------
+# 直接从 GitHub 下载
+# ----------------------------------------------------------------
+download_from_github_direct() {
+    local github_url="$1"
+    local output="$2"
+
+    info "直接从 GitHub 下载: ${github_url}"
+    if wget -q --timeout=60 -O "$output" "$github_url" 2>/dev/null; then
+        info "GitHub 直接下载成功。"
+        return 0
+    fi
+
+    error "GitHub 直接下载失败，请确认网络可直连 github.com，或改用其他下载方式。"
+    return 1
+}
+
+# ----------------------------------------------------------------
+# 下载并解压 EasyTier
 # ----------------------------------------------------------------
 download_and_extract() {
     local arch="$1"
     local version="$2"
+    local download_method="$3"
     local base_name="easytier-linux-${arch}"
     local zip_name="${base_name}-${version}.zip"
-    local download_url="https://github.com/EasyTier/EasyTier/releases/download/${version}/${zip_name}"
+    local rel_path="${version}/${zip_name}"
+    local github_url="https://github.com/EasyTier/EasyTier/releases/download/${rel_path}"
 
     title "下载 EasyTier ${version} (${arch})"
-    download_with_proxy "$download_url" "$TMP_ZIP"
+
+    if [ "$download_method" = "local" ]; then
+        download_from_local "$rel_path" "$TMP_ZIP"
+    elif [ "$download_method" = "proxy" ]; then
+        download_from_proxy "$github_url" "$TMP_ZIP"
+    else
+        download_from_github_direct "$github_url" "$TMP_ZIP"
+    fi
 
     title "解压文件"
     mkdir -p "$INSTALL_DIR"
@@ -366,15 +440,21 @@ confirm_uninstall() {
 
 do_install() {
     local username="$1" node_hostname="$2"
-    local version console_addr
+    local version download_method console_addr
 
     title "EasyTier 全新安装"
     version=$(get_version)
-    info "版本: $version | 架构: $ARCH"
+    download_method=$(choose_download_method)
+    case "$download_method" in
+        local)  _dm_label="本地镜像" ;;
+        proxy)  _dm_label="GitHub 代理" ;;
+        direct) _dm_label="GitHub 直连" ;;
+    esac
+    info "版本: $version | 架构: $ARCH | 下载方式: ${_dm_label}"
     console_addr=$(get_console_host)
 
     [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
-    download_and_extract "$ARCH" "$version"
+    download_and_extract "$ARCH" "$version" "$download_method"
     apply_service "$username" "$node_hostname" "$console_addr"
 
     show_status
@@ -417,9 +497,16 @@ do_uninstall() {
 
 do_update() {
     title "更新 EasyTier"
-    local version
+    local version download_method
+
     version=$(get_version)
-    info "目标版本: $version | 架构: $ARCH"
+    download_method=$(choose_download_method)
+    case "$download_method" in
+        local)  _dm_label="本地镜像" ;;
+        proxy)  _dm_label="GitHub 代理" ;;
+        direct) _dm_label="GitHub 直连" ;;
+    esac
+    info "目标版本: $version | 架构: $ARCH | 下载方式: ${_dm_label}"
 
     local backup_dir
     backup_dir=$(mktemp -d /tmp/easytier_backup_XXXXXX)
@@ -431,7 +518,7 @@ do_update() {
 
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
 
-    if ! download_and_extract "$ARCH" "$version"; then
+    if ! download_and_extract "$ARCH" "$version" "$download_method"; then
         warn "下载失败，正在回滚到备份版本..."
         for bin in easytier-core easytier-cli; do
             [ -f "${backup_dir}/${bin}" ] && cp "${backup_dir}/${bin}" "${INSTALL_DIR}/"
