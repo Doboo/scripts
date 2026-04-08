@@ -668,7 +668,7 @@ EOF
 }
 
 # ----------------------------------------------------------------
-# 切换到命令行参数模式（do_modify 辅助函数）
+# 切换到 Web控制台模式（do_modify 辅助函数）
 # ----------------------------------------------------------------
 _do_switch_to_console_mode() {
     local username node_hostname console_addr
@@ -1214,7 +1214,7 @@ do_install() {
     local install_method
     while true; do
         printf "请选择客户端安装方式:\n" >&2
-        printf "  ${BOLD}1)${RESET} 命令行参数模式（输入用户名、机器名、控制台地址）\n" >&2
+        printf "  ${BOLD}1)${RESET} Web控制台模式（输入用户名、机器名、控制台地址）\n" >&2
         printf "  ${BOLD}2)${RESET} 配置文件模式（输入网络名称、密钥、节点地址等，写入 YAML）\n" >&2
         printf "请输入选项 [1/2]（默认: 2）: " >&2
         read -r install_method </dev/tty
@@ -1296,7 +1296,7 @@ do_install() {
         return
     fi
 
-    # ── 方式 1：命令行参数模式 ──
+    # ── 方式 1：Web控制台模式 ──
     echo -e "\n${BOLD}── 第 4 步：配置节点信息 ──${RESET}" >&2
     info "节点信息用于在 EasyTier 控制台中识别你的设备。"
     local username
@@ -1391,7 +1391,7 @@ do_modify() {
                 local switch_method
                 while true; do
                     printf "请选择客户端安装方式:\n" >&2
-                    printf "  ${BOLD}1)${RESET} 命令行参数模式\n" >&2
+                    printf "  ${BOLD}1)${RESET} Web控制台模式\n" >&2
                     printf "  ${BOLD}2)${RESET} 配置文件模式\n" >&2
                     printf "请输入选项 [1/2]（默认: 2）: " >&2
                     read -r switch_method </dev/tty
@@ -1420,7 +1420,7 @@ do_modify() {
     if [ "$cur_mode" = "$MODE_CONSOLE_FILE" ]; then
         echo -e "${BOLD}当前为客户端模式（配置文件），可执行以下操作：${RESET}" >&2
         echo -e "  ${BOLD}${GREEN}1)${RESET} 修改配置文件参数"
-        echo -e "  ${BOLD}${YELLOW}2)${RESET} 切换为命令行参数模式"
+        echo -e "  ${BOLD}${YELLOW}2)${RESET} 切换为Web控制台模式"
         echo -e "  ${BOLD}0)${RESET} 取消，返回主菜单"
         printf "请输入选项 [0/1/2]: " >&2
         read -r cf_choice </dev/tty
@@ -1463,7 +1463,7 @@ do_modify() {
                 return
                 ;;
             2)
-                echo -e "\n${BOLD}── 切换为命令行参数模式 ──${RESET}" >&2
+                echo -e "\n${BOLD}── 切换为 Web控制台模式 ──${RESET}" >&2
                 _do_switch_to_console_mode
                 return
                 ;;
