@@ -18,8 +18,9 @@ readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
 
 readonly PROXY_LIST=(
     "https://ghfast.top/"
-    "https://docker.mk/"
     "https://gh-proxy.com/"
+    "https://ghproxylist.com/"
+    "https://mirror.ghproxy.com/"
 )
 
 # ----------------------------------------------------------------
@@ -176,7 +177,7 @@ choose_download_method() {
         printf "\n请选择下载方式:\n" >&2
         printf "  ${BOLD}1)${RESET} 本地镜像服务器下载（默认，推荐）\n" >&2
         printf "     地址: ${BLUE}${LOCAL_MIRROR}${RESET}\n" >&2
-        printf "  ${BOLD}2)${RESET} GitHub 代理下载（ghfast.top / docker.mk / gh-proxy.com）\n" >&2
+        printf "  ${BOLD}2)${RESET} GitHub 代理下载（ghfast.top / gh-proxy.com / ghproxylist.com / mirror.ghproxy.com）\n" >&2
         printf "  ${BOLD}3)${RESET} 直接从 GitHub 下载（需能直连 github.com）\n" >&2
         printf "     地址: ${BLUE}https://github.com/EasyTier/EasyTier/releases${RESET}\n" >&2
         printf "请输入选项 [1/2/3]（默认: 1）: " >&2
@@ -244,7 +245,7 @@ download_from_local() {
     local url="${LOCAL_MIRROR}/${rel_path}"
 
     info "从本地镜像下载: ${url}"
-    if wget -q --timeout=30 -O "$output" "$url" 2>/dev/null; then
+    if wget -q --timeout=15 -O "$output" "$url" 2>/dev/null; then
         info "本地镜像下载成功。"
         return 0
     fi
@@ -262,7 +263,7 @@ download_from_proxy() {
 
     for proxy in "${PROXY_LIST[@]}"; do
         info "尝试代理: ${proxy}"
-        if wget -q --timeout=30 -O "$output" "${proxy}${github_url}" 2>/dev/null; then
+        if wget -q --timeout=15 -O "$output" "${proxy}${github_url}" 2>/dev/null; then
             info "代理下载成功: ${proxy}"
             return 0
         fi
@@ -281,7 +282,7 @@ download_from_github_direct() {
     local output="$2"
 
     info "直接从 GitHub 下载: ${github_url}"
-    if wget -q --timeout=60 -O "$output" "$github_url" 2>/dev/null; then
+    if wget -q --timeout=15 -O "$output" "$github_url" 2>/dev/null; then
         info "GitHub 直接下载成功。"
         return 0
     fi
