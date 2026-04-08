@@ -1054,35 +1054,7 @@ Environment=TOKIO_CONSOLE=1
 WantedBy=multi-user.target
 EOF
     else
-        local username="$2"
-        local node_hostname="$3"
-        local console_addr="$4"
-        local relay_hostname="$2"
-        local tcp_port="$3"
-        local udp_port="$4"
-        local ws_port="$5"
-        local wss_port="$6"
-        cat <<EOF
-[Unit]
-Description=EasyTier Relay Service
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=${INSTALL_DIR}/easytier-core \
-  --hostname "${relay_hostname}" \
-  --listeners "tcp://0.0.0.0:${tcp_port}" "udp://0.0.0.0:${udp_port}" "ws://0.0.0.0:${ws_port}" "wss://0.0.0.0:${wss_port}" \
-  --relay-network-whitelist "*" \
-  --relay-all-peer-rpc
-Restart=always
-RestartSec=5
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    else
+        # console 模式 (CLI 参数)
         local username="$2"
         local node_hostname="$3"
         local console_addr="$4"
