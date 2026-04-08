@@ -11,14 +11,17 @@ set -euo pipefail
 readonly INSTALL_DIR="/root/easytier"
 readonly SERVICE_FILE="/etc/systemd/system/easytier.service"
 readonly SERVICE_NAME="easytier"
+readonly CONFIG_FILE="/etc/easytier/easytier.yaml"
 readonly DEFAULT_CONSOLE_HOST="cfgs.175419.xyz"
 readonly DEFAULT_CONSOLE_PORT="22020"
 readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
 
 # 服务运行模式
-# console : 连接控制台，以普通节点运行
-# relay   : 不连接控制台，以服务端/中继模式运行
+# console       : 连接控制台（命令行参数）
+# console_file  : 连接控制台（使用配置文件）
+# relay         : 不连接控制台，以服务端/中继模式运行
 readonly MODE_CONSOLE="console"
+readonly MODE_CONSOLE_FILE="console_file"
 readonly MODE_RELAY="relay"
 
 readonly PROXY_LIST=(
@@ -146,9 +149,62 @@ read_current_mode() {
     fi
     if grep -q "relay-network-whitelist" "$SERVICE_FILE" 2>/dev/null; then
         echo "$MODE_RELAY"
+    elif grep -q "\-c.*easytier\.yaml" "$SERVICE_FILE" 2>/dev/null; then
+        echo "$MODE_CONSOLE_FILE"
     else
         echo "$MODE_CONSOLE"
     fi
+}
+
+# ----------------------------------------------------------------
+# 读取配置文件中各字段（辅助函数）
+# ----------------------------------------------------------------
+_read_yaml_val() {
+    local key="$1"
+    local file="${2:-}"
+    [ -z "$file" ] && file="$CONFIG_FILE"
+    [ ! -f "$file" ] && return
+    grep -E "^${key}\s*=" "$file" 2>/dev/null | sed "s/^${key}\s*=\s*//" | tr -d '"' | tr -d "'" | xargs
+}
+
+# 读取 config 模式 hostname
+read_current_conf_hostname() {
+    _read_yaml_val "hostname" | head -1
+}
+
+# 读取网络名称
+read_current_network_name() {
+    _read_yaml_val "network_name" | head -1
+}
+
+# 读取网络密钥
+read_current_network_secret() {
+    _read_yaml_val "network_secret" | head -1
+}
+
+# 读取本机虚拟 IP
+read_current_conf_ipv4() {
+    _read_yaml_val "ipv4" | head -1
+}
+
+# 读取是否 dhcp
+read_current_conf_dhcp() {
+    _read_yaml_val "dhcp" | head -1
+}
+
+# 读取 peer URI
+read_current_conf_peer_uri() {
+    grep -E '^\[\[peer\]\]' "$CONFIG_FILE" -A 1 2>/dev/null | grep "^uri\s*=" | sed 's/^uri\s*=\s*//' | tr -d '"' | tr -d "'" | xargs | awk '{print $1}'
+}
+
+# 读取子网代理 CIDR
+read_current_conf_proxy_cidr() {
+    grep -E '^\[\[proxy_network\]\]' "$CONFIG_FILE" -A 1 2>/dev/null | grep "^cidr\s*=" | sed 's/^cidr\s*=\s*//' | tr -d '"' | tr -d "'" | xargs | awk '{print $1}'
+}
+
+# 读取加密开关
+read_current_conf_encryption() {
+    _read_yaml_val "enable_encryption" | head -1
 }
 
 # ----------------------------------------------------------------
@@ -204,12 +260,26 @@ show_current_info() {
             [ -n "$relay_udp"  ] && echo -e "  UDP 端口: ${CYAN}${relay_udp}${RESET}"
             [ -n "$relay_ws"   ] && echo -e "  WS  端口: ${CYAN}${relay_ws}${RESET}"
             [ -n "$relay_wss"  ] && echo -e "  WSS 端口: ${CYAN}${relay_wss}${RESET}"
+        elif [ "$cur_mode" = "$MODE_CONSOLE_FILE" ]; then
+            local cf_host cf_netname cf_netsec cf_ip cf_peer
+            cf_host=$(read_current_conf_hostname)
+            cf_netname=$(read_current_network_name)
+            cf_netsec=$(read_current_network_secret)
+            cf_ip=$(read_current_conf_ipv4)
+            cf_peer=$(read_current_conf_peer_uri)
+            echo -e "  运行模式: ${CYAN}客户端模式（配置文件）${RESET}"
+            echo -e "  配置文件: ${CYAN}${CONFIG_FILE}${RESET}"
+            [ -n "$cf_host"    ] && echo -e "  主机名:   ${CYAN}${cf_host}${RESET}"
+            [ -n "$cf_netname" ] && echo -e "  网络名称: ${CYAN}${cf_netname}${RESET}"
+            [ -n "$cf_netsec"  ] && echo -e "  网络密钥: ${CYAN}${cf_netsec}${RESET}"
+            [ -n "$cf_ip"      ] && echo -e "  虚拟 IP:  ${CYAN}${cf_ip}${RESET}"
+            [ -n "$cf_peer"    ] && echo -e "  节点地址: ${CYAN}${cf_peer}${RESET}"
         else
             local cur_console cur_user cur_host
             cur_console=$(read_current_config)
             cur_user=$(read_current_username)
             cur_host=$(read_current_hostname)
-            echo -e "  运行模式: ${CYAN}客户端模式（连接控制台）${RESET}"
+            echo -e "  运行模式: ${CYAN}客户端模式（命令行参数）${RESET}"
             [ -n "$cur_console" ] && echo -e "  控制台:   ${CYAN}${cur_console}${RESET}"
             [ -n "$cur_user"    ] && echo -e "  用户名:   ${CYAN}${cur_user}${RESET}"
             [ -n "$cur_host"    ] && echo -e "  机器名:   ${CYAN}${cur_host}${RESET}"
@@ -239,9 +309,9 @@ main_menu() {
         show_current_info
 
         echo -e "${BOLD}请选择操作:${RESET}"
-        echo -e "  ${BOLD}${GREEN}1)${RESET} 全新安装 - 客户端模式（连接控制台组网）"
+        echo -e "  ${BOLD}${GREEN}1)${RESET} 全新安装 - 客户端模式"
         echo -e "  ${BOLD}${GREEN}2)${RESET} 全新安装 - 服务端模式（独立中继，不连控制台）"
-        echo -e "  ${BOLD}${YELLOW}3)${RESET} 修改配置（用户名 / 机器名 / 控制台地址）"
+        echo -e "  ${BOLD}${YELLOW}3)${RESET} 修改配置"
         echo -e "  ${BOLD}${CYAN}4)${RESET} 更新程序（保留配置）"
         echo -e "  ${BOLD}${RED}5)${RESET} 卸载 EasyTier"
         echo -e "  ${BOLD}6)${RESET} 查看运行日志"
@@ -373,6 +443,290 @@ prompt_console() {
 
     info "控制台地址: ${host}:${port}"
     echo "${host}:${port}"
+}
+
+# ----------------------------------------------------------------
+# 交互：配置文件模式 - 引导输入各项参数
+# ----------------------------------------------------------------
+
+# 网络名称
+prompt_network_name() {
+    local cur default
+    cur=$(read_current_network_name)
+    default="${cur:-}"
+
+    while true; do
+        if [ -n "$default" ]; then
+            printf "请输入网络名称 (当前: ${CYAN}%s${RESET}，直接回车保留): " "$default" >&2
+        else
+            printf "请输入网络名称 (network_name): " >&2
+        fi
+        read -r val </dev/tty
+        val="${val:-$default}"
+        if [ -z "$val" ]; then
+            warn "网络名称不能为空，请重新输入。"
+            continue
+        fi
+        if [[ "$val" =~ [[:space:]] ]]; then
+            warn "网络名称不能包含空格，请重新输入。"
+            continue
+        fi
+        echo "$val"
+        return
+    done
+}
+
+# 网络密钥/密码
+prompt_network_secret() {
+    local cur default
+    cur=$(read_current_network_secret)
+    default="${cur:-}"
+
+    while true; do
+        if [ -n "$default" ]; then
+            printf "请输入网络密钥/密码 (当前: ${CYAN}%s${RESET}，直接回车保留): " "$default" >&2
+        else
+            printf "请输入网络密钥/密码 (network_secret): " >&2
+        fi
+        read -r val </dev/tty
+        val="${val:-$default}"
+        if [ -z "$val" ]; then
+            warn "网络密钥不能为空，请重新输入。"
+            continue
+        fi
+        echo "$val"
+        return
+    done
+}
+
+# 虚拟 IP（与 DHCP 二选一）
+prompt_ipv4() {
+    local cur default
+    cur=$(read_current_conf_ipv4)
+    local cur_dhcp
+    cur_dhcp=$(read_current_conf_dhcp)
+    default="$cur"
+
+    info "请选择 IP 地址分配方式："
+    printf "  ${BOLD}1)${RESET} 使用 DHCP 自动分配（推荐）\n" >&2
+    printf "  ${BOLD}2)${RESET} 手动指定固定 IP\n" >&2
+    local choice
+    while true; do
+        printf "请输入选项 [1/2]（默认: 1）: " >&2
+        read -r choice </dev/tty
+        choice="${choice:-1}"
+        case "$choice" in
+            1) echo "dhcp"; return ;;
+            2) break ;;
+            *) warn "无效选项，请输入 1 或 2。" ;;
+        esac
+    done
+
+    while true; do
+        printf "请输入虚拟网络 IPv4 地址 (例如: ${CYAN}10.0.0.50${RESET}): " >&2
+        read -r val </dev/tty
+        val="${val:-$default}"
+        if [ -z "$val" ]; then
+            warn "IP 地址不能为空。"
+            continue
+        fi
+        # 简单校验格式
+        if ! [[ "$val" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            warn "IP 格式无效，请重新输入（如 10.0.0.50）。"
+            continue
+        fi
+        echo "$val"
+        return
+    done
+}
+
+# 节点服务器地址（peer URI）
+prompt_peer_uri() {
+    local cur default
+    cur=$(read_current_conf_peer_uri)
+    default="${cur:-}"
+
+    while true; do
+        if [ -n "$default" ]; then
+            printf "请输入节点服务器地址 (peer URI，直接回车保留): " >&2
+            printf "\n  当前: ${CYAN}%s${RESET}\n" "$default" >&2
+            printf "  (留空回车保留，或输入新地址，如: udp://1.2.3.4:11010): " >&2
+        else
+            printf "请输入节点服务器地址 (peer URI，如: ${CYAN}udp://1.2.3.4:11010${RESET}): " >&2
+        fi
+        read -r val </dev/tty
+        val="${val:-$default}"
+        # 留空也允许，不强制
+        echo "$val"
+        return
+    done
+}
+
+# 子网代理
+prompt_proxy_network() {
+    local cur default
+    cur=$(read_current_conf_proxy_cidr)
+    default="$cur"
+
+    while true; do
+        printf "是否配置子网代理？如需访问本机局域网请输入 CIDR，否则直接回车跳过:\n" >&2
+        printf "  (例如: ${CYAN}192.168.1.0/24${RESET}，直接回车跳过): " >&2
+        read -r val </dev/tty
+        val="${val:-$default}"
+        if [ -z "$val" ]; then
+            echo ""
+            return
+        fi
+        if ! [[ "$val" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
+            warn "CIDR 格式无效，请输入类似 192.168.1.0/24 的格式。"
+            continue
+        fi
+        echo "$val"
+        return
+    done
+}
+
+# 是否启用加密
+prompt_encryption() {
+    local cur
+    cur=$(read_current_conf_encryption)
+    local choice
+
+    while true; do
+        if [ "$cur" = "false" ]; then
+            printf "是否启用加密 (enable_encryption)？[${YELLOW}y/N${RESET}]（当前: 关闭）: " >&2
+        elif [ "$cur" = "true" ]; then
+            printf "是否启用加密 (enable_encryption)？[${GREEN}Y/n${RESET}]（当前: 开启）: " >&2
+        else
+            printf "是否启用加密 (enable_encryption)？[${GREEN}Y/n${RESET}]（默认: 关闭）: " >&2
+        fi
+        read -r choice </dev/tty
+        choice="${choice:-N}"
+        case "$choice" in
+            Y|y) echo "true";  return ;;
+            N|n|"") echo "false"; return ;;
+            *) warn "无效选项，请输入 Y 或 N。" ;;
+        esac
+    done
+}
+
+# ----------------------------------------------------------------
+# 生成配置文件 /etc/easytier/easytier.yaml
+# ----------------------------------------------------------------
+write_config_file() {
+    local hostname="$1"
+    local network_name="$2"
+    local network_secret="$3"
+    local ipv4_mode="$4"   # "dhcp" 或具体 IP
+    local peer_uri="$5"
+    local proxy_cidr="$6"
+    local encryption="$7"
+
+    mkdir -p "$(dirname "$CONFIG_FILE")"
+
+    # 写入配置（TOML 格式）
+    cat > "$CONFIG_FILE" <<EOF
+# EasyTier 配置文件，由 easytier.sh 自动生成
+# 如需手动修改，建议先备份
+
+hostname = "${hostname}"
+ipv4 = "${ipv4_mode}"
+dhcp = $([ "$ipv4_mode" = "dhcp" ] && echo "true" || echo "false")
+listeners = []
+
+[network_identity]
+network_name = "${network_name}"
+network_secret = "${network_secret}"
+EOF
+
+    # peer URI（可选）
+    if [ -n "$peer_uri" ]; then
+        cat >> "$CONFIG_FILE" <<EOF
+
+[[peer]]
+uri = "${peer_uri}"
+EOF
+    fi
+
+    # 子网代理（可选）
+    if [ -n "$proxy_cidr" ]; then
+        cat >> "$CONFIG_FILE" <<EOF
+
+[[proxy_network]]
+cidr = "${proxy_cidr}"
+EOF
+    fi
+
+    cat >> "$CONFIG_FILE" <<EOF
+
+[flags]
+enable_encryption = ${encryption}
+default_protocol = "udp"
+EOF
+
+    info "配置文件已写入: ${CONFIG_FILE}"
+}
+
+# ----------------------------------------------------------------
+# 切换到命令行参数模式（do_modify 辅助函数）
+# ----------------------------------------------------------------
+_do_switch_to_console_mode() {
+    local username node_hostname console_addr
+    username=$(prompt_username)
+    node_hostname=$(prompt_hostname)
+    console_addr=$(prompt_console)
+
+    echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
+    echo -e "  新模式:   ${CYAN}客户端模式（命令行参数）${RESET}"
+    echo -e "  用户名:   ${CYAN}${username}${RESET}"
+    echo -e "  机器名:   ${CYAN}${node_hostname}${RESET}"
+    echo -e "  控制台:   ${CYAN}${console_addr}${RESET}"
+    echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+    printf "${YELLOW}确认切换并重启服务？[Y/n]: ${RESET}" >&2
+    read -r ans </dev/tty
+    ans="${ans:-Y}"
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+
+    rm -f "$CONFIG_FILE"
+    apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
+    show_status
+}
+
+# ----------------------------------------------------------------
+# 切换到配置文件模式（do_modify 辅助函数）
+# ----------------------------------------------------------------
+_do_switch_to_config_mode() {
+    info "直接回车可保留当前值。"
+
+    local cfg_hostname cfg_netname cfg_netsec cfg_ip_mode cfg_peer cfg_proxy cfg_enc
+
+    echo -e "\n${BOLD}── hostname ──${RESET}" >&2
+    cfg_hostname=$(prompt_hostname)
+    cfg_netname=$(prompt_network_name)
+    cfg_netsec=$(prompt_network_secret)
+    cfg_ip_mode=$(prompt_ipv4)
+    cfg_peer=$(prompt_peer_uri)
+    cfg_proxy=$(prompt_proxy_network)
+    cfg_enc=$(prompt_encryption)
+
+    echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
+    echo -e "  新模式:   ${CYAN}客户端模式（配置文件）${RESET}"
+    echo -e "  主机名:   ${CYAN}${cfg_hostname}${RESET}"
+    echo -e "  网络名称: ${CYAN}${cfg_netname}${RESET}"
+    echo -e "  网络密钥: ${CYAN}${cfg_netsec}${RESET}"
+    echo -e "  IP 方式:  ${CYAN}${cfg_ip_mode}${RESET}"
+    [ -n "$cfg_peer"  ] && echo -e "  节点地址: ${CYAN}${cfg_peer}${RESET}"
+    [ -n "$cfg_proxy" ] && echo -e "  子网代理: ${CYAN}${cfg_proxy}${RESET}"
+    echo -e "  启用加密: ${CYAN}${cfg_enc}${RESET}"
+    echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+    printf "${YELLOW}确认切换并重启服务？[Y/n]: ${RESET}" >&2
+    read -r ans </dev/tty
+    ans="${ans:-Y}"
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+
+    write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" "$cfg_ip_mode" "$cfg_peer" "$cfg_proxy" "$cfg_enc"
+    apply_service "$MODE_CONSOLE_FILE"
+    show_status
 }
 
 # ----------------------------------------------------------------
@@ -680,6 +1034,54 @@ LimitNOFILE=1048576
 [Install]
 WantedBy=multi-user.target
 EOF
+    elif [ "$mode" = "$MODE_CONSOLE_FILE" ]; then
+        # 配置文件模式，仅指定 -c 参数
+        cat <<EOF
+[Unit]
+Description=EasyTier Service (Config File Mode)
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${INSTALL_DIR}/easytier-core -c ${CONFIG_FILE}
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+Environment=TOKIO_CONSOLE=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    else
+        local username="$2"
+        local node_hostname="$3"
+        local console_addr="$4"
+        local relay_hostname="$2"
+        local tcp_port="$3"
+        local udp_port="$4"
+        local ws_port="$5"
+        local wss_port="$6"
+        cat <<EOF
+[Unit]
+Description=EasyTier Relay Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${INSTALL_DIR}/easytier-core \
+  --hostname "${relay_hostname}" \
+  --listeners "tcp://0.0.0.0:${tcp_port}" "udp://0.0.0.0:${udp_port}" "ws://0.0.0.0:${ws_port}" "wss://0.0.0.0:${wss_port}" \
+  --relay-network-whitelist "*" \
+  --relay-all-peer-rpc
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
     else
         local username="$2"
         local node_hostname="$3"
@@ -836,11 +1238,26 @@ do_install() {
         [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消安装。"; return 0; }
     fi
 
-    echo -e "\n${BOLD}── 第 1 步：选择版本 ──${RESET}" >&2
+    echo -e "\n${BOLD}── 第 1 步：选择安装方式 ──${RESET}" >&2
+    local install_method
+    while true; do
+        printf "请选择客户端安装方式:\n" >&2
+        printf "  ${BOLD}1)${RESET} 命令行参数模式（输入用户名、机器名、控制台地址）\n" >&2
+        printf "  ${BOLD}2)${RESET} 配置文件模式（输入网络名称、密钥、节点地址等，写入 YAML）\n" >&2
+        printf "请输入选项 [1/2]（默认: 2）: " >&2
+        read -r install_method </dev/tty
+        install_method="${install_method:-2}"
+        case "$install_method" in
+            1|2) break ;;
+            *) warn "无效选项，请输入 1 或 2。" ;;
+        esac
+    done
+
+    echo -e "\n${BOLD}── 第 2 步：选择版本 ──${RESET}" >&2
     local version
     version=$(prompt_version)
 
-    echo -e "\n${BOLD}── 第 2 步：选择下载方式 ──${RESET}" >&2
+    echo -e "\n${BOLD}── 第 3 步：选择下载方式 ──${RESET}" >&2
     local download_method dm_label
     download_method=$(prompt_download_method)
     case "$download_method" in
@@ -849,7 +1266,66 @@ do_install() {
         direct) dm_label="GitHub 直连" ;;
     esac
 
-    echo -e "\n${BOLD}── 第 3 步：配置节点信息 ──${RESET}" >&2
+    # ── 方式 2：配置文件模式 ──
+    if [ "$install_method" = "2" ]; then
+        echo -e "\n${BOLD}── 第 4 步：配置网络信息 ──${RESET}" >&2
+
+        info "hostname：用于在网络中标识此节点，默认使用本机系统名。"
+        local cfg_hostname
+        cfg_hostname=$(prompt_hostname)
+
+        local cfg_netname
+        cfg_netname=$(prompt_network_name)
+
+        local cfg_netsec
+        cfg_netsec=$(prompt_network_secret)
+
+        local cfg_ip_mode
+        cfg_ip_mode=$(prompt_ipv4)
+
+        echo -e "\n${BOLD}── 第 5 步：配置节点服务器地址 ──${RESET}" >&2
+        info "peer URI：节点服务器的网络地址，留空则从控制台自动获取。"
+        local cfg_peer
+        cfg_peer=$(prompt_peer_uri)
+
+        echo -e "\n${BOLD}── 第 6 步：配置子网代理（可选） ──${RESET}" >&2
+        local cfg_proxy
+        cfg_proxy=$(prompt_proxy_network)
+        [ -n "$cfg_proxy" ] && info "将代理本地网段: ${cfg_proxy}"
+
+        echo -e "\n${BOLD}── 第 7 步：加密设置 ──${RESET}" >&2
+        local cfg_enc
+        cfg_enc=$(prompt_encryption)
+
+        echo -e "\n${BOLD}${CYAN}──────── 安装确认 ────────${RESET}"
+        echo -e "  模式:     ${CYAN}客户端模式（配置文件）${RESET}"
+        echo -e "  版本:     ${CYAN}${version}${RESET}"
+        echo -e "  下载方式: ${CYAN}${dm_label}${RESET}"
+        echo -e "  主机名:   ${CYAN}${cfg_hostname}${RESET}"
+        echo -e "  网络名称: ${CYAN}${cfg_netname}${RESET}"
+        echo -e "  网络密钥: ${CYAN}${cfg_netsec}${RESET}"
+        echo -e "  IP 方式:  ${CYAN}${cfg_ip_mode}${RESET}"
+        [ -n "$cfg_peer"   ] && echo -e "  节点地址: ${CYAN}${cfg_peer}${RESET}"
+        [ -n "$cfg_proxy"  ] && echo -e "  子网代理: ${CYAN}${cfg_proxy}${RESET}"
+        echo -e "  启用加密: ${CYAN}${cfg_enc}${RESET}"
+        echo -e "  配置文件: ${CYAN}${CONFIG_FILE}${RESET}"
+        echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+        printf "${YELLOW}确认安装？[Y/n]: ${RESET}" >&2
+        read -r ans </dev/tty
+        ans="${ans:-Y}"
+        [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消安装。"; return 0; }
+
+        info "版本: $version | 架构: $ARCH | 下载方式: ${dm_label}"
+        [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
+        download_and_extract "$ARCH" "$version" "$download_method"
+        write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" "$cfg_ip_mode" "$cfg_peer" "$cfg_proxy" "$cfg_enc"
+        apply_service "$MODE_CONSOLE_FILE"
+        show_status
+        return
+    fi
+
+    # ── 方式 1：命令行参数模式 ──
+    echo -e "\n${BOLD}── 第 4 步：配置节点信息 ──${RESET}" >&2
     info "节点信息用于在 EasyTier 控制台中识别你的设备。"
     local username
     username=$(prompt_username)
@@ -857,14 +1333,13 @@ do_install() {
     local node_hostname
     node_hostname=$(prompt_hostname)
 
-    echo -e "\n${BOLD}── 第 4 步：配置控制台地址 ──${RESET}" >&2
+    echo -e "\n${BOLD}── 第 5 步：配置控制台地址 ──${RESET}" >&2
     info "控制台是 EasyTier 的服务器地址，用于节点发现和组网。"
     local console_addr
     console_addr=$(prompt_console)
 
-    # 确认信息
     echo -e "\n${BOLD}${CYAN}──────── 安装确认 ────────${RESET}"
-    echo -e "  模式:     ${CYAN}客户端模式（连接控制台）${RESET}"
+    echo -e "  模式:     ${CYAN}客户端模式（命令行参数）${RESET}"
     echo -e "  版本:     ${CYAN}${version}${RESET}"
     echo -e "  下载方式: ${CYAN}${dm_label}${RESET}"
     echo -e "  用户名:   ${CYAN}${username}${RESET}"
@@ -905,7 +1380,7 @@ do_modify() {
         # 当前为服务端模式：可修改 hostname/端口，也可切换到客户端模式
         echo -e "${BOLD}当前为服务端/中继模式，可执行以下操作：${RESET}" >&2
         echo -e "  ${BOLD}${GREEN}1)${RESET} 修改主机名 / 侦听端口（保持服务端模式）"
-        echo -e "  ${BOLD}${YELLOW}2)${RESET} 切换为客户端模式（重新配置节点和控制台）"
+        echo -e "  ${BOLD}${YELLOW}2)${RESET} 切换为客户端模式"
         echo -e "  ${BOLD}0)${RESET} 取消，返回主菜单"
         printf "请输入选项 [0/1/2]: " >&2
         read -r relay_choice </dev/tty
@@ -940,26 +1415,26 @@ do_modify() {
                 ;;
             2)
                 # 切换到客户端模式
-                local username
-                username=$(prompt_username)
-                local node_hostname
-                node_hostname=$(prompt_hostname)
-                local console_addr
-                console_addr=$(prompt_console)
+                echo -e "\n${BOLD}── 选择切换后的客户端安装方式 ──${RESET}" >&2
+                local switch_method
+                while true; do
+                    printf "请选择客户端安装方式:\n" >&2
+                    printf "  ${BOLD}1)${RESET} 命令行参数模式\n" >&2
+                    printf "  ${BOLD}2)${RESET} 配置文件模式\n" >&2
+                    printf "请输入选项 [1/2]（默认: 2）: " >&2
+                    read -r switch_method </dev/tty
+                    switch_method="${switch_method:-2}"
+                    case "$switch_method" in
+                        1|2) break ;;
+                        *) warn "无效选项，请输入 1 或 2。" ;;
+                    esac
+                done
 
-                echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
-                echo -e "  新模式:   ${CYAN}客户端模式（连接控制台）${RESET}"
-                echo -e "  用户名:   ${CYAN}${username}${RESET}"
-                echo -e "  机器名:   ${CYAN}${node_hostname}${RESET}"
-                echo -e "  控制台:   ${CYAN}${console_addr}${RESET}"
-                echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
-                printf "${YELLOW}确认切换并重启服务？[Y/n]: ${RESET}" >&2
-                read -r ans </dev/tty
-                ans="${ans:-Y}"
-                [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
-
-                apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
-                show_status
+                if [ "$switch_method" = "2" ]; then
+                    _do_switch_to_config_mode
+                else
+                    _do_switch_to_console_mode
+                fi
                 return
                 ;;
             *)
@@ -969,7 +1444,65 @@ do_modify() {
         esac
     fi
 
-    info "当前为客户端模式，直接回车可保留现有值："
+    # 配置文件模式
+    if [ "$cur_mode" = "$MODE_CONSOLE_FILE" ]; then
+        echo -e "${BOLD}当前为客户端模式（配置文件），可执行以下操作：${RESET}" >&2
+        echo -e "  ${BOLD}${GREEN}1)${RESET} 修改配置文件参数"
+        echo -e "  ${BOLD}${YELLOW}2)${RESET} 切换为命令行参数模式"
+        echo -e "  ${BOLD}0)${RESET} 取消，返回主菜单"
+        printf "请输入选项 [0/1/2]: " >&2
+        read -r cf_choice </dev/tty
+
+        case "$cf_choice" in
+            1)
+                info "直接回车可保留当前值。"
+                echo -e "\n${BOLD}── 修改 hostname ──${RESET}" >&2
+                local cfg_hostname; cfg_hostname=$(prompt_hostname)
+                echo -e "\n${BOLD}── 修改网络名称 ──${RESET}" >&2
+                local cfg_netname; cfg_netname=$(prompt_network_name)
+                echo -e "\n${BOLD}── 修改网络密钥 ──${RESET}" >&2
+                local cfg_netsec; cfg_netsec=$(prompt_network_secret)
+                echo -e "\n${BOLD}── 修改 IP 分配方式 ──${RESET}" >&2
+                local cfg_ip_mode; cfg_ip_mode=$(prompt_ipv4)
+                echo -e "\n${BOLD}── 修改节点服务器地址 ──${RESET}" >&2
+                local cfg_peer; cfg_peer=$(prompt_peer_uri)
+                echo -e "\n${BOLD}── 修改子网代理 ──${RESET}" >&2
+                local cfg_proxy; cfg_proxy=$(prompt_proxy_network)
+                echo -e "\n${BOLD}── 修改加密设置 ──${RESET}" >&2
+                local cfg_enc; cfg_enc=$(prompt_encryption)
+
+                echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
+                echo -e "  主机名:   ${CYAN}${cfg_hostname}${RESET}"
+                echo -e "  网络名称: ${CYAN}${cfg_netname}${RESET}"
+                echo -e "  网络密钥: ${CYAN}${cfg_netsec}${RESET}"
+                echo -e "  IP 方式:  ${CYAN}${cfg_ip_mode}${RESET}"
+                [ -n "$cfg_peer"   ] && echo -e "  节点地址: ${CYAN}${cfg_peer}${RESET}"
+                [ -n "$cfg_proxy"  ] && echo -e "  子网代理: ${CYAN}${cfg_proxy}${RESET}"
+                echo -e "  启用加密: ${CYAN}${cfg_enc}${RESET}"
+                echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+                printf "${YELLOW}确认修改并重启服务？[Y/n]: ${RESET}" >&2
+                read -r ans </dev/tty
+                ans="${ans:-Y}"
+                [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消修改。"; return 0; }
+
+                write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" "$cfg_ip_mode" "$cfg_peer" "$cfg_proxy" "$cfg_enc"
+                apply_service "$MODE_CONSOLE_FILE"
+                show_status
+                return
+                ;;
+            2)
+                echo -e "\n${BOLD}── 切换为命令行参数模式 ──${RESET}" >&2
+                _do_switch_to_console_mode
+                return
+                ;;
+            *)
+                info "已取消。"
+                return 0
+                ;;
+        esac
+    fi
+
+    info "当前为客户端模式（命令行参数），直接回车可保留现有值："
 
     echo -e "\n${BOLD}── 节点信息 ──${RESET}" >&2
     local username
@@ -1011,7 +1544,9 @@ do_update() {
     local cur_mode
     cur_mode=$(read_current_mode)
     if [ "$cur_mode" = "$MODE_RELAY" ]; then
-        info "当前为服务端/中继模式，配置文件保持不变。"
+        info "当前为服务端/中继模式，配置保持不变。"
+    elif [ "$cur_mode" = "$MODE_CONSOLE_FILE" ]; then
+        info "当前为配置文件模式，${CONFIG_FILE} 保持不变。"
     fi
 
     echo -e "\n${BOLD}── 第 1 步：选择目标版本 ──${RESET}" >&2
@@ -1089,6 +1624,7 @@ do_uninstall() {
     systemctl reset-failed 2>/dev/null || true
 
     rm -f "$SERVICE_FILE"
+    rm -f "$CONFIG_FILE"
     rm -rf "$INSTALL_DIR"
 
     success "✓ EasyTier 已完全卸载。"
