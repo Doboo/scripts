@@ -540,26 +540,50 @@ prompt_ipv4() {
     done
 }
 
-# 节点服务器地址（peer URI）
+# 节点服务器地址（peer URI，支持多个）
+# 返回格式: peer1|peer2|peer3 (用 | 分隔)
 prompt_peer_uri() {
     local cur default
     cur=$(read_current_conf_peer_uri)
     default="${cur:-}"
 
+    echo -e "\n${BOLD}── 配置节点服务器地址 (peer URI) ──${RESET}" >&2
+    echo "  支持添加多个节点服务器地址" >&2
+    echo "  输入完成后直接回车确认\n" >&2
+
+    local peers=()
+    local idx=1
+
+    # 读取已有的 peer
+    if [ -n "$default" ]; then
+        IFS='|' read -ra existing <<< "$default"
+        for p in "${existing[@]}"; do
+            [ -n "$p" ] && peers+=("$p")
+        done
+    fi
+
     while true; do
-        if [ -n "$default" ]; then
-            printf "请输入节点服务器地址 (peer URI，直接回车保留): " >&2
-            printf "\n  当前: ${CYAN}%s${RESET}\n" "$default" >&2
-            printf "  (留空回车保留，或输入新地址，如: udp://1.2.3.4:11010): " >&2
+        local cur_val="${peers[$((idx-1))]:-}"
+        if [ "$idx" -le "${#peers[@]}" ]; then
+            printf "  节点 %d (当前: ${CYAN}%s${RESET})\n" "$idx" "$cur_val" >&2
+            printf "  输入新地址或直接回车保留: " >&2
+            read -r val </dev/tty
+            [ -n "$val" ] && peers[$((idx-1))]="$val"
         else
-            printf "请输入节点服务器地址 (peer URI，如: ${CYAN}udp://1.2.3.4:11010${RESET}): " >&2
+            printf "  节点 %d (新添加，输入地址如: ${CYAN}udp://1.2.3.4:11010${RESET})\n" "$idx" >&2
+            printf "  或直接回车完成输入: " >&2
+            read -r val </dev/tty
+            [ -z "$val" ] && break
+            peers+=("$val")
         fi
-        read -r val </dev/tty
-        val="${val:-$default}"
-        # 留空也允许，不强制
-        echo "$val"
-        return
+        idx=$((idx+1))
     done
+
+    # 返回用 | 分隔的字符串
+    local result
+    printf -v result '%s|' "${peers[@]}"
+    result="${result%|}"  # 去掉末尾的 |
+    echo "$result"
 }
 
 # 子网代理
@@ -639,13 +663,27 @@ network_name = "${network_name}"
 network_secret = "${network_secret}"
 EOF
 
-    # peer URI（可选）
+    # peer URI（可选，支持多个）
     if [ -n "$peer_uri" ]; then
-        cat >> "$CONFIG_FILE" <<EOF
+        IFS='|' read -ra PEERS <<< "$peer_uri"
+        local first_peer=true
+        for p in "${PEERS[@]}"; do
+            [ -z "$p" ] && continue
+            if $first_peer; then
+                cat >> "$CONFIG_FILE" <<EOF
 
 [[peer]]
-uri = "${peer_uri}"
+uri = "${p}"
 EOF
+                first_peer=false
+            else
+                cat >> "$CONFIG_FILE" <<EOF
+
+[[peer]]
+uri = "${p}"
+EOF
+            fi
+        done
     fi
 
     # 子网代理（可选）
@@ -662,6 +700,9 @@ EOF
 [flags]
 enable_encryption = ${encryption}
 default_protocol = "udp"
+latency_first = true           # 延迟优先模式（默认开启）
+use_physical_nic_only = true   # 仅使用物理网卡（默认开启）
+multi_thread = true            # 启用多线程（默认开启）
 EOF
 
     info "配置文件已写入: ${CONFIG_FILE}"
@@ -1136,6 +1177,29 @@ show_status() {
     echo "    journalctl -f -u ${SERVICE_NAME}.service" >&2
 }
 
+# ----------------------------------------------------------------
+# 交互式日志查看（Ctrl+D 返回主菜单）
+# ----------------------------------------------------------------
+watch_logs() {
+    echo -e "\n${BOLD}────────── 实时日志监控 ──────────${RESET}" >&2
+    echo -e "  ${GREEN}按 ${BOLD}Ctrl+D${RESET}${GREEN} 返回主菜单${RESET}" >&2
+    echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
+
+    # 设置陷阱：Ctrl+D (EOF) 时触发返回
+    local old_trap
+    old_trap=$(trap -p EXIT)
+    trap 'echo -e "\n${YELLOW}已退出日志监控，返回主菜单...${RESET}"; return 0' INT TERM
+
+    # 使用 journalctl -f 实时查看日志
+    # -f: 实时跟踪
+    # --no-pager: 不使用分页
+    # -u: 指定服务
+    journalctl -f -u "${SERVICE_NAME}.service" --no-pager
+
+    # 恢复原有陷阱
+    eval "$old_trap"
+}
+
 # ================================================================
 # 操作：全新安装
 # ================================================================
@@ -1216,9 +1280,9 @@ do_install() {
         printf "请选择客户端安装方式:\n" >&2
         printf "  ${BOLD}1)${RESET} Web控制台模式（输入用户名、机器名、控制台地址）\n" >&2
         printf "  ${BOLD}2)${RESET} 配置文件模式（输入网络名称、密钥、节点地址等，写入 YAML）\n" >&2
-        printf "请输入选项 [1/2]（默认: 2）: " >&2
+        printf "请输入选项 [1/2]（默认: 1）: " >&2
         read -r install_method </dev/tty
-        install_method="${install_method:-2}"
+        install_method="${install_method:-1}"
         case "$install_method" in
             1|2) break ;;
             *) warn "无效选项，请输入 1 或 2。" ;;
@@ -1626,8 +1690,7 @@ do_show_log() {
             journalctl -u "${SERVICE_NAME}.service" -n 50 --no-pager 2>/dev/null || true
             ;;
         2)
-            info "开始实时追踪日志，按 Ctrl+C 退出..."
-            journalctl -f -u "${SERVICE_NAME}.service" 2>/dev/null || true
+            watch_logs
             ;;
         3)
             journalctl -u "${SERVICE_NAME}.service" --since today --no-pager 2>/dev/null || true
