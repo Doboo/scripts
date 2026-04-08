@@ -408,11 +408,12 @@ prompt_relay_hostname() {
 # ----------------------------------------------------------------
 # 交互：服务端模式 - 配置侦听端口
 # ----------------------------------------------------------------
-# EasyTier 官方默认端口：tcp/udp/ws 均为 11010，wss 为 11011
+# 各协议侦听端口默认值
+# tcp/udp: 11010（建议保持相同），ws: 11011，wss: 11012
 readonly DEFAULT_TCP_PORT="11010"
 readonly DEFAULT_UDP_PORT="11010"
-readonly DEFAULT_WS_PORT="11010"
-readonly DEFAULT_WSS_PORT="11011"
+readonly DEFAULT_WS_PORT="11011"
+readonly DEFAULT_WSS_PORT="11012"
 
 prompt_listen_ports() {
     local cur_tcp cur_udp cur_ws cur_wss
@@ -424,7 +425,7 @@ prompt_listen_ports() {
     local tcp_port udp_port ws_port wss_port
 
     info "以下为各协议侦听端口，直接回车使用括号内的默认/当前值。"
-    echo -e "  (EasyTier 官方默认: tcp/udp/ws=${DEFAULT_TCP_PORT}, wss=${DEFAULT_WSS_PORT})\n" >&2
+    echo -e "  (默认: tcp/udp=${DEFAULT_TCP_PORT}，建议相同；ws=${DEFAULT_WS_PORT}；wss=${DEFAULT_WSS_PORT})\n" >&2
 
     # TCP
     local tcp_def="${cur_tcp:-$DEFAULT_TCP_PORT}"
