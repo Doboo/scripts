@@ -151,6 +151,9 @@ read_current_mode() {
         echo "$MODE_RELAY"
     elif grep -q "\-c.*easytier\.yaml" "$SERVICE_FILE" 2>/dev/null; then
         echo "$MODE_CONSOLE_FILE"
+    elif grep -q "\-w\s" "$SERVICE_FILE" 2>/dev/null; then
+        # Web控制台模式：使用 -w 参数
+        echo "$MODE_CONSOLE"
     else
         echo "$MODE_CONSOLE"
     fi
@@ -279,7 +282,7 @@ show_current_info() {
             cur_console=$(read_current_config)
             cur_user=$(read_current_username)
             cur_host=$(read_current_hostname)
-            echo -e "  运行模式: ${CYAN}客户端模式（命令行参数）${RESET}"
+            echo -e "  运行模式: ${CYAN}Web控制台模式${RESET}"
             [ -n "$cur_console" ] && echo -e "  控制台:   ${CYAN}${cur_console}${RESET}"
             [ -n "$cur_user"    ] && echo -e "  用户名:   ${CYAN}${cur_user}${RESET}"
             [ -n "$cur_host"    ] && echo -e "  机器名:   ${CYAN}${cur_host}${RESET}"
@@ -718,7 +721,7 @@ _do_switch_to_console_mode() {
     console_addr=$(prompt_console)
 
     echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
-    echo -e "  新模式:   ${CYAN}客户端模式（命令行参数）${RESET}"
+    echo -e "  新模式:   ${CYAN}Web控制台模式${RESET}"
     echo -e "  用户名:   ${CYAN}${username}${RESET}"
     echo -e "  机器名:   ${CYAN}${node_hostname}${RESET}"
     echo -e "  控制台:   ${CYAN}${console_addr}${RESET}"
@@ -1367,7 +1370,7 @@ do_install() {
     console_addr=$(prompt_console)
 
     echo -e "\n${BOLD}${CYAN}──────── 安装确认 ────────${RESET}"
-    echo -e "  模式:     ${CYAN}客户端模式（命令行参数）${RESET}"
+    echo -e "  模式:     ${CYAN}Web控制台模式${RESET}"
     echo -e "  版本:     ${CYAN}${version}${RESET}"
     echo -e "  下载方式: ${CYAN}${dm_label}${RESET}"
     echo -e "  用户名:   ${CYAN}${username}${RESET}"
@@ -1530,7 +1533,7 @@ do_modify() {
         esac
     fi
 
-    info "当前为客户端模式（命令行参数），直接回车可保留现有值："
+    info "当前为Web控制台模式，直接回车可保留现有值："
 
     echo -e "\n${BOLD}── 节点信息 ──${RESET}" >&2
     local username
