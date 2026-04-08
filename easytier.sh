@@ -1178,45 +1178,18 @@ show_status() {
 }
 
 # ----------------------------------------------------------------
-# 交互式日志查看（Ctrl+D 返回主菜单）
+# 交互式日志查看（Ctrl+C 返回主菜单）
 # ----------------------------------------------------------------
 watch_logs() {
     echo -e "\n${BOLD}────────── 实时日志监控 ──────────${RESET}" >&2
-    echo -e "  ${GREEN}按 ${BOLD}Ctrl+D${RESET}${GREEN} 返回主菜单${RESET}" >&2
+    echo -e "  ${GREEN}按 ${BOLD}Ctrl+C${RESET}${GREEN} 返回主菜单${RESET}" >&2
     echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
 
-    # 临时文件
-    local pidfile="/tmp/easytier_watch_$$.pid"
-    local logfile="/tmp/easytier_watch_$$.log"
+    # 使用 trap 捕获 Ctrl+C
+    trap 'echo -e "\n${YELLOW}已退出日志监控，返回主菜单...${RESET}" >&2; trap - INT; return 0' INT
 
-    # 后台启动 journalctl -f
-    bash -c "journalctl -f -u '${SERVICE_NAME}.service' --no-pager > '${logfile}' 2>&1" &
-    echo $! > "$pidfile"
-
-    # 清理函数
-    cleanup_watch() {
-        local pid=$(cat "$pidfile" 2>/dev/null)
-        [ -n "$pid" ] && kill "$pid" 2>/dev/null
-        rm -f "$pidfile" "$logfile"
-    }
-
-    # 实时显示日志 + 监听 Ctrl+D
-    tail -f "$logfile" &
-    local tail_pid=$!
-
-    # 监听 stdin 的 EOF (Ctrl+D)
-    while true; do
-        if read -t 0 -u 0 2>/dev/null; then
-            read -r _ </dev/stdin >/dev/null 2>&1
-            break
-        fi
-        sleep 0.1
-    done
-
-    # 收到 Ctrl+D，清理退出
-    kill $tail_pid 2>/dev/null
-    cleanup_watch
-    echo -e "\n${YELLOW}已退出日志监控，返回主菜单...${RESET}" >&2
+    # 实时查看日志
+    journalctl -f -u "${SERVICE_NAME}.service" --no-pager
 }
 
 # ================================================================
@@ -1698,7 +1671,7 @@ do_show_log() {
 
     echo -e "\n${BOLD}请选择日志查看方式:${RESET}"
     echo -e "  ${BOLD}1)${RESET} 查看最近 50 条日志"
-    echo -e "  ${BOLD}2)${RESET} 实时追踪日志（${BOLD}Ctrl+D${RESET} 退出）"
+    echo -e "  ${BOLD}2)${RESET} 实时追踪日志（${BOLD}Ctrl+C${RESET} 退出）"
     echo -e "  ${BOLD}3)${RESET} 查看今日全部日志"
     printf "请输入选项 [1/2/3]（默认: 1）: "
     read -r choice </dev/tty
