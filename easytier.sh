@@ -15,6 +15,12 @@ readonly DEFAULT_CONSOLE_HOST="cfgs.175419.xyz"
 readonly DEFAULT_CONSOLE_PORT="22020"
 readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
 
+# 服务运行模式
+# console : 连接控制台，以普通节点运行
+# relay   : 不连接控制台，以服务端/中继模式运行
+readonly MODE_CONSOLE="console"
+readonly MODE_RELAY="relay"
+
 readonly PROXY_LIST=(
     "https://ghfast.top/"
     "https://gh-proxy.com/"
@@ -131,6 +137,21 @@ read_current_hostname() {
 }
 
 # ----------------------------------------------------------------
+# 检测当前运行模式
+# ----------------------------------------------------------------
+read_current_mode() {
+    if [ ! -f "$SERVICE_FILE" ]; then
+        echo ""
+        return
+    fi
+    if grep -q "relay-network-whitelist" "$SERVICE_FILE" 2>/dev/null; then
+        echo "$MODE_RELAY"
+    else
+        echo "$MODE_CONSOLE"
+    fi
+}
+
+# ----------------------------------------------------------------
 # 显示当前状态信息
 # ----------------------------------------------------------------
 show_current_info() {
@@ -144,13 +165,20 @@ show_current_info() {
     fi
 
     if [ -f "$SERVICE_FILE" ]; then
-        local cur_console cur_user cur_host
-        cur_console=$(read_current_config)
-        cur_user=$(read_current_username)
-        cur_host=$(read_current_hostname)
-        [ -n "$cur_console" ] && echo -e "  控制台:   ${CYAN}${cur_console}${RESET}"
-        [ -n "$cur_user"    ] && echo -e "  用户名:   ${CYAN}${cur_user}${RESET}"
-        [ -n "$cur_host"    ] && echo -e "  机器名:   ${CYAN}${cur_host}${RESET}"
+        local cur_mode
+        cur_mode=$(read_current_mode)
+        if [ "$cur_mode" = "$MODE_RELAY" ]; then
+            echo -e "  运行模式: ${CYAN}服务端/中继模式${RESET}"
+        else
+            local cur_console cur_user cur_host
+            cur_console=$(read_current_config)
+            cur_user=$(read_current_username)
+            cur_host=$(read_current_hostname)
+            echo -e "  运行模式: ${CYAN}客户端模式（连接控制台）${RESET}"
+            [ -n "$cur_console" ] && echo -e "  控制台:   ${CYAN}${cur_console}${RESET}"
+            [ -n "$cur_user"    ] && echo -e "  用户名:   ${CYAN}${cur_user}${RESET}"
+            [ -n "$cur_host"    ] && echo -e "  机器名:   ${CYAN}${cur_host}${RESET}"
+        fi
     fi
 
     if [ -f "${INSTALL_DIR}/easytier-core" ]; then
@@ -176,28 +204,30 @@ main_menu() {
         show_current_info
 
         echo -e "${BOLD}请选择操作:${RESET}"
-        echo -e "  ${BOLD}${GREEN}1)${RESET} 全新安装 EasyTier"
-        echo -e "  ${BOLD}${YELLOW}2)${RESET} 修改配置（用户名 / 机器名 / 控制台地址）"
-        echo -e "  ${BOLD}${CYAN}3)${RESET} 更新程序（保留配置）"
-        echo -e "  ${BOLD}${RED}4)${RESET} 卸载 EasyTier"
-        echo -e "  ${BOLD}5)${RESET} 查看运行日志"
+        echo -e "  ${BOLD}${GREEN}1)${RESET} 全新安装 - 客户端模式（连接控制台组网）"
+        echo -e "  ${BOLD}${GREEN}2)${RESET} 全新安装 - 服务端模式（独立中继，不连控制台）"
+        echo -e "  ${BOLD}${YELLOW}3)${RESET} 修改配置（用户名 / 机器名 / 控制台地址）"
+        echo -e "  ${BOLD}${CYAN}4)${RESET} 更新程序（保留配置）"
+        echo -e "  ${BOLD}${RED}5)${RESET} 卸载 EasyTier"
+        echo -e "  ${BOLD}6)${RESET} 查看运行日志"
         echo -e "  ${BOLD}0)${RESET} 退出"
         echo
-        printf "请输入选项 [0-5]: "
+        printf "请输入选项 [0-6]: "
         read -r choice </dev/tty
 
         case "$choice" in
-            1) do_install  ;;
-            2) do_modify   ;;
-            3) do_update   ;;
-            4) do_uninstall;;
-            5) do_show_log ;;
+            1) do_install "$MODE_CONSOLE" ;;
+            2) do_install "$MODE_RELAY"   ;;
+            3) do_modify   ;;
+            4) do_update   ;;
+            5) do_uninstall;;
+            6) do_show_log ;;
             0)
                 echo -e "\n${GREEN}再见！${RESET}"
                 exit 0
                 ;;
             *)
-                warn "无效选项 '${choice}'，请输入 0~5。"
+                warn "无效选项 '${choice}'，请输入 0~6。"
                 sleep 1
                 ;;
         esac
@@ -479,11 +509,30 @@ download_and_extract() {
 # 生成 systemd 服务内容
 # ----------------------------------------------------------------
 generate_service() {
-    local username="$1"
-    local node_hostname="$2"
-    local console_addr="$3"
+    local mode="$1"
 
-    cat <<EOF
+    if [ "$mode" = "$MODE_RELAY" ]; then
+        cat <<EOF
+[Unit]
+Description=EasyTier Relay Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${INSTALL_DIR}/easytier-core --relay-network-whitelist "*" --relay-all-peer-rpc
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    else
+        local username="$2"
+        local node_hostname="$3"
+        local console_addr="$4"
+        cat <<EOF
 [Unit]
 Description=EasyTier Service
 After=network.target network-online.target
@@ -500,17 +549,17 @@ Environment=TOKIO_CONSOLE=1
 [Install]
 WantedBy=multi-user.target
 EOF
+    fi
 }
 
 # ----------------------------------------------------------------
 # 写入服务文件并重载
 # ----------------------------------------------------------------
 apply_service() {
-    local username="$1"
-    local node_hostname="$2"
-    local console_addr="$3"
-
-    generate_service "$username" "$node_hostname" "$console_addr" > "$SERVICE_FILE"
+    local mode="$1"
+    shift
+    # relay 模式：无后续参数；console 模式：username node_hostname console_addr
+    generate_service "$mode" "$@" > "$SERVICE_FILE"
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME" 2>&1 | while IFS= read -r line; do
         info "$line"
@@ -565,7 +614,53 @@ show_status() {
 # 操作：全新安装
 # ================================================================
 do_install() {
-    title "EasyTier 全新安装"
+    local mode="${1:-}"
+
+    # 中继/服务端模式
+    if [ "$mode" = "$MODE_RELAY" ]; then
+        title "EasyTier 服务端/中继模式安装"
+
+        if [ -f "$SERVICE_FILE" ] || [ -f "${INSTALL_DIR}/easytier-core" ]; then
+            warn "检测到已有安装！全新安装将会覆盖现有程序和服务。"
+            printf "${YELLOW}确认继续？[y/N]: ${RESET}" >&2
+            read -r ans </dev/tty
+            [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消安装。"; return 0; }
+        fi
+
+        echo -e "\n${BOLD}── 第 1 步：选择版本 ──${RESET}" >&2
+        local version
+        version=$(prompt_version)
+
+        echo -e "\n${BOLD}── 第 2 步：选择下载方式 ──${RESET}" >&2
+        local download_method dm_label
+        download_method=$(prompt_download_method)
+        case "$download_method" in
+            local)  dm_label="本地镜像" ;;
+            proxy)  dm_label="GitHub 代理" ;;
+            direct) dm_label="GitHub 直连" ;;
+        esac
+
+        echo -e "\n${BOLD}${CYAN}──────── 安装确认 ────────${RESET}"
+        echo -e "  模式:     ${CYAN}服务端/中继模式${RESET}（不连接控制台）"
+        echo -e "  版本:     ${CYAN}${version}${RESET}"
+        echo -e "  下载方式: ${CYAN}${dm_label}${RESET}"
+        echo -e "  启动参数: ${CYAN}--relay-network-whitelist \"*\" --relay-all-peer-rpc${RESET}"
+        echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+        printf "${YELLOW}确认安装？[Y/n]: ${RESET}" >&2
+        read -r ans </dev/tty
+        ans="${ans:-Y}"
+        [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消安装。"; return 0; }
+
+        info "模式: 服务端/中继 | 版本: $version | 架构: $ARCH | 下载方式: ${dm_label}"
+        [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
+        download_and_extract "$ARCH" "$version" "$download_method"
+        apply_service "$MODE_RELAY"
+        show_status
+        return
+    fi
+
+    # 客户端模式（连接控制台）
+    title "EasyTier 客户端模式安装"
 
     if [ -f "$SERVICE_FILE" ] || [ -f "${INSTALL_DIR}/easytier-core" ]; then
         warn "检测到已有安装！全新安装将会覆盖现有程序和服务。"
@@ -602,6 +697,7 @@ do_install() {
 
     # 确认信息
     echo -e "\n${BOLD}${CYAN}──────── 安装确认 ────────${RESET}"
+    echo -e "  模式:     ${CYAN}客户端模式（连接控制台）${RESET}"
     echo -e "  版本:     ${CYAN}${version}${RESET}"
     echo -e "  下载方式: ${CYAN}${dm_label}${RESET}"
     echo -e "  用户名:   ${CYAN}${username}${RESET}"
@@ -616,7 +712,7 @@ do_install() {
     info "版本: $version | 架构: $ARCH | 下载方式: ${dm_label}"
     [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
     download_and_extract "$ARCH" "$version" "$download_method"
-    apply_service "$username" "$node_hostname" "$console_addr"
+    apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
     show_status
 }
 
@@ -635,7 +731,42 @@ do_modify() {
         return 1
     fi
 
-    info "当前配置如下，直接回车可保留现有值："
+    local cur_mode
+    cur_mode=$(read_current_mode)
+
+    if [ "$cur_mode" = "$MODE_RELAY" ]; then
+        # 当前为服务端模式：可选切换到客户端模式
+        echo -e "${YELLOW}当前为服务端/中继模式，无法修改用户名、控制台等参数。${RESET}" >&2
+        echo -e "${BOLD}如需切换为客户端模式，将重新配置节点信息。${RESET}" >&2
+        printf "${YELLOW}是否切换为客户端模式？[y/N]: ${RESET}" >&2
+        read -r ans </dev/tty
+        [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+
+        # 切换到客户端模式
+        local username
+        username=$(prompt_username)
+        local node_hostname
+        node_hostname=$(prompt_hostname)
+        local console_addr
+        console_addr=$(prompt_console)
+
+        echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
+        echo -e "  新模式:   ${CYAN}客户端模式（连接控制台）${RESET}"
+        echo -e "  用户名:   ${CYAN}${username}${RESET}"
+        echo -e "  机器名:   ${CYAN}${node_hostname}${RESET}"
+        echo -e "  控制台:   ${CYAN}${console_addr}${RESET}"
+        echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+        printf "${YELLOW}确认切换并重启服务？[Y/n]: ${RESET}" >&2
+        read -r ans </dev/tty
+        ans="${ans:-Y}"
+        [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+
+        apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
+        show_status
+        return
+    fi
+
+    info "当前为客户端模式，直接回车可保留现有值："
 
     echo -e "\n${BOLD}── 节点信息 ──${RESET}" >&2
     local username
@@ -659,7 +790,7 @@ do_modify() {
     ans="${ans:-Y}"
     [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消修改。"; return 0; }
 
-    apply_service "$username" "$node_hostname" "$console_addr"
+    apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
     show_status
 }
 
@@ -672,6 +803,12 @@ do_update() {
     if [ ! -d "$INSTALL_DIR" ]; then
         error "未检测到已安装的 EasyTier，请先执行【全新安装】。"
         return 1
+    fi
+
+    local cur_mode
+    cur_mode=$(read_current_mode)
+    if [ "$cur_mode" = "$MODE_RELAY" ]; then
+        info "当前为服务端/中继模式，配置文件保持不变。"
     fi
 
     echo -e "\n${BOLD}── 第 1 步：选择目标版本 ──${RESET}" >&2
