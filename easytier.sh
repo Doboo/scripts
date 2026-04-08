@@ -152,6 +152,30 @@ read_current_mode() {
 }
 
 # ----------------------------------------------------------------
+# 读取服务端模式 hostname
+# ----------------------------------------------------------------
+read_current_relay_hostname() {
+    if [ ! -f "$SERVICE_FILE" ]; then
+        echo ""
+        return
+    fi
+    grep -oP '(?<=--hostname ")[^"]+' "$SERVICE_FILE" 2>/dev/null || echo ""
+}
+
+# ----------------------------------------------------------------
+# 读取服务端模式侦听端口（协议: tcp/udp/ws/wss）
+# ----------------------------------------------------------------
+read_current_relay_port() {
+    local proto="$1"
+    if [ ! -f "$SERVICE_FILE" ]; then
+        echo ""
+        return
+    fi
+    # 匹配 --listeners "tcp://0.0.0.0:11010" 这样的格式
+    grep -oP "(?<=${proto}://0\\.0\\.0\\.0:)[0-9]+" "$SERVICE_FILE" 2>/dev/null | head -1 || echo ""
+}
+
+# ----------------------------------------------------------------
 # 显示当前状态信息
 # ----------------------------------------------------------------
 show_current_info() {
@@ -169,6 +193,17 @@ show_current_info() {
         cur_mode=$(read_current_mode)
         if [ "$cur_mode" = "$MODE_RELAY" ]; then
             echo -e "  运行模式: ${CYAN}服务端/中继模式${RESET}"
+            local relay_host relay_tcp relay_udp relay_ws relay_wss
+            relay_host=$(read_current_relay_hostname)
+            relay_tcp=$(read_current_relay_port "tcp")
+            relay_udp=$(read_current_relay_port "udp")
+            relay_ws=$(read_current_relay_port "ws")
+            relay_wss=$(read_current_relay_port "wss")
+            [ -n "$relay_host" ] && echo -e "  主机名:   ${CYAN}${relay_host}${RESET}"
+            [ -n "$relay_tcp"  ] && echo -e "  TCP 端口: ${CYAN}${relay_tcp}${RESET}"
+            [ -n "$relay_udp"  ] && echo -e "  UDP 端口: ${CYAN}${relay_udp}${RESET}"
+            [ -n "$relay_ws"   ] && echo -e "  WS  端口: ${CYAN}${relay_ws}${RESET}"
+            [ -n "$relay_wss"  ] && echo -e "  WSS 端口: ${CYAN}${relay_wss}${RESET}"
         else
             local cur_console cur_user cur_host
             cur_console=$(read_current_config)
@@ -338,6 +373,113 @@ prompt_console() {
 
     info "控制台地址: ${host}:${port}"
     echo "${host}:${port}"
+}
+
+# ----------------------------------------------------------------
+# 交互：服务端模式 - 输入 hostname
+# ----------------------------------------------------------------
+prompt_relay_hostname() {
+    local cur_val default
+    cur_val=$(read_current_relay_hostname)
+    # 默认值优先用已有配置，其次用系统机器名
+    default="${cur_val:-$(hostname -s 2>/dev/null || echo "")}"
+
+    while true; do
+        if [ -n "$default" ]; then
+            printf "请输入节点主机名 (默认: ${CYAN}%s${RESET}，直接回车使用默认值): " "$default" >&2
+        else
+            printf "请输入节点主机名 (例: relay-server-01): " >&2
+        fi
+        read -r val </dev/tty
+        val="${val:-$default}"
+        if [ -z "$val" ]; then
+            warn "主机名不能为空，请重新输入。"
+            continue
+        fi
+        if [[ "$val" =~ [[:space:]/\\] ]]; then
+            warn "主机名不能包含空格或斜杠，请重新输入。"
+            continue
+        fi
+        echo "$val"
+        return
+    done
+}
+
+# ----------------------------------------------------------------
+# 交互：服务端模式 - 配置侦听端口
+# ----------------------------------------------------------------
+# EasyTier 官方默认端口：tcp/udp/ws 均为 11010，wss 为 11011
+readonly DEFAULT_TCP_PORT="11010"
+readonly DEFAULT_UDP_PORT="11010"
+readonly DEFAULT_WS_PORT="11010"
+readonly DEFAULT_WSS_PORT="11011"
+
+prompt_listen_ports() {
+    local cur_tcp cur_udp cur_ws cur_wss
+    cur_tcp=$(read_current_relay_port "tcp")
+    cur_udp=$(read_current_relay_port "udp")
+    cur_ws=$(read_current_relay_port "ws")
+    cur_wss=$(read_current_relay_port "wss")
+
+    local tcp_port udp_port ws_port wss_port
+
+    info "以下为各协议侦听端口，直接回车使用括号内的默认/当前值。"
+    echo -e "  (EasyTier 官方默认: tcp/udp/ws=${DEFAULT_TCP_PORT}, wss=${DEFAULT_WSS_PORT})\n" >&2
+
+    # TCP
+    local tcp_def="${cur_tcp:-$DEFAULT_TCP_PORT}"
+    while true; do
+        printf "  TCP  侦听端口 [默认: ${CYAN}%s${RESET}]: " "$tcp_def" >&2
+        read -r tcp_port </dev/tty
+        tcp_port="${tcp_port:-$tcp_def}"
+        if ! [[ "$tcp_port" =~ ^[0-9]+$ ]] || [ "$tcp_port" -lt 1 ] || [ "$tcp_port" -gt 65535 ]; then
+            warn "端口无效，请输入 1~65535 之间的整数。"
+            continue
+        fi
+        break
+    done
+
+    # UDP
+    local udp_def="${cur_udp:-$DEFAULT_UDP_PORT}"
+    while true; do
+        printf "  UDP  侦听端口 [默认: ${CYAN}%s${RESET}]: " "$udp_def" >&2
+        read -r udp_port </dev/tty
+        udp_port="${udp_port:-$udp_def}"
+        if ! [[ "$udp_port" =~ ^[0-9]+$ ]] || [ "$udp_port" -lt 1 ] || [ "$udp_port" -gt 65535 ]; then
+            warn "端口无效，请输入 1~65535 之间的整数。"
+            continue
+        fi
+        break
+    done
+
+    # WS
+    local ws_def="${cur_ws:-$DEFAULT_WS_PORT}"
+    while true; do
+        printf "  WS   侦听端口 [默认: ${CYAN}%s${RESET}]: " "$ws_def" >&2
+        read -r ws_port </dev/tty
+        ws_port="${ws_port:-$ws_def}"
+        if ! [[ "$ws_port" =~ ^[0-9]+$ ]] || [ "$ws_port" -lt 1 ] || [ "$ws_port" -gt 65535 ]; then
+            warn "端口无效，请输入 1~65535 之间的整数。"
+            continue
+        fi
+        break
+    done
+
+    # WSS
+    local wss_def="${cur_wss:-$DEFAULT_WSS_PORT}"
+    while true; do
+        printf "  WSS  侦听端口 [默认: ${CYAN}%s${RESET}]: " "$wss_def" >&2
+        read -r wss_port </dev/tty
+        wss_port="${wss_port:-$wss_def}"
+        if ! [[ "$wss_port" =~ ^[0-9]+$ ]] || [ "$wss_port" -lt 1 ] || [ "$wss_port" -gt 65535 ]; then
+            warn "端口无效，请输入 1~65535 之间的整数。"
+            continue
+        fi
+        break
+    done
+
+    # 以空格分隔输出四个端口，由调用方拆分
+    echo "${tcp_port} ${udp_port} ${ws_port} ${wss_port}"
 }
 
 # ----------------------------------------------------------------
@@ -512,6 +654,11 @@ generate_service() {
     local mode="$1"
 
     if [ "$mode" = "$MODE_RELAY" ]; then
+        local relay_hostname="$2"
+        local tcp_port="$3"
+        local udp_port="$4"
+        local ws_port="$5"
+        local wss_port="$6"
         cat <<EOF
 [Unit]
 Description=EasyTier Relay Service
@@ -520,7 +667,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/easytier-core --relay-network-whitelist "*" --relay-all-peer-rpc
+ExecStart=${INSTALL_DIR}/easytier-core \
+  --hostname "${relay_hostname}" \
+  --listeners "tcp://0.0.0.0:${tcp_port}" "udp://0.0.0.0:${udp_port}" "ws://0.0.0.0:${ws_port}" "wss://0.0.0.0:${wss_port}" \
+  --relay-network-whitelist "*" \
+  --relay-all-peer-rpc
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
@@ -640,11 +791,26 @@ do_install() {
             direct) dm_label="GitHub 直连" ;;
         esac
 
+        echo -e "\n${BOLD}── 第 3 步：配置服务端信息 ──${RESET}" >&2
+        info "主机名将显示在 EasyTier 网络拓扑中，默认使用本机系统名。"
+        local relay_hostname
+        relay_hostname=$(prompt_relay_hostname)
+
+        echo -e "\n${BOLD}── 第 4 步：配置侦听端口 ──${RESET}" >&2
+        info "服务端需要对外开放以下端口，建议在防火墙/安全组中放行对应端口。"
+        local ports_str tcp_port udp_port ws_port wss_port
+        ports_str=$(prompt_listen_ports)
+        read -r tcp_port udp_port ws_port wss_port <<< "$ports_str"
+
         echo -e "\n${BOLD}${CYAN}──────── 安装确认 ────────${RESET}"
         echo -e "  模式:     ${CYAN}服务端/中继模式${RESET}（不连接控制台）"
         echo -e "  版本:     ${CYAN}${version}${RESET}"
         echo -e "  下载方式: ${CYAN}${dm_label}${RESET}"
-        echo -e "  启动参数: ${CYAN}--relay-network-whitelist \"*\" --relay-all-peer-rpc${RESET}"
+        echo -e "  主机名:   ${CYAN}${relay_hostname}${RESET}"
+        echo -e "  TCP 端口: ${CYAN}${tcp_port}${RESET}"
+        echo -e "  UDP 端口: ${CYAN}${udp_port}${RESET}"
+        echo -e "  WS  端口: ${CYAN}${ws_port}${RESET}"
+        echo -e "  WSS 端口: ${CYAN}${wss_port}${RESET}"
         echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
         printf "${YELLOW}确认安装？[Y/n]: ${RESET}" >&2
         read -r ans </dev/tty
@@ -654,7 +820,7 @@ do_install() {
         info "模式: 服务端/中继 | 版本: $version | 架构: $ARCH | 下载方式: ${dm_label}"
         [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
         download_and_extract "$ARCH" "$version" "$download_method"
-        apply_service "$MODE_RELAY"
+        apply_service "$MODE_RELAY" "$relay_hostname" "$tcp_port" "$udp_port" "$ws_port" "$wss_port"
         show_status
         return
     fi
@@ -735,35 +901,71 @@ do_modify() {
     cur_mode=$(read_current_mode)
 
     if [ "$cur_mode" = "$MODE_RELAY" ]; then
-        # 当前为服务端模式：可选切换到客户端模式
-        echo -e "${YELLOW}当前为服务端/中继模式，无法修改用户名、控制台等参数。${RESET}" >&2
-        echo -e "${BOLD}如需切换为客户端模式，将重新配置节点信息。${RESET}" >&2
-        printf "${YELLOW}是否切换为客户端模式？[y/N]: ${RESET}" >&2
-        read -r ans </dev/tty
-        [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+        # 当前为服务端模式：可修改 hostname/端口，也可切换到客户端模式
+        echo -e "${BOLD}当前为服务端/中继模式，可执行以下操作：${RESET}" >&2
+        echo -e "  ${BOLD}${GREEN}1)${RESET} 修改主机名 / 侦听端口（保持服务端模式）"
+        echo -e "  ${BOLD}${YELLOW}2)${RESET} 切换为客户端模式（重新配置节点和控制台）"
+        echo -e "  ${BOLD}0)${RESET} 取消，返回主菜单"
+        printf "请输入选项 [0/1/2]: " >&2
+        read -r relay_choice </dev/tty
 
-        # 切换到客户端模式
-        local username
-        username=$(prompt_username)
-        local node_hostname
-        node_hostname=$(prompt_hostname)
-        local console_addr
-        console_addr=$(prompt_console)
+        case "$relay_choice" in
+            1)
+                echo -e "\n${BOLD}── 修改主机名 ──${RESET}" >&2
+                info "直接回车可保留当前值。"
+                local relay_hostname
+                relay_hostname=$(prompt_relay_hostname)
 
-        echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
-        echo -e "  新模式:   ${CYAN}客户端模式（连接控制台）${RESET}"
-        echo -e "  用户名:   ${CYAN}${username}${RESET}"
-        echo -e "  机器名:   ${CYAN}${node_hostname}${RESET}"
-        echo -e "  控制台:   ${CYAN}${console_addr}${RESET}"
-        echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
-        printf "${YELLOW}确认切换并重启服务？[Y/n]: ${RESET}" >&2
-        read -r ans </dev/tty
-        ans="${ans:-Y}"
-        [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+                echo -e "\n${BOLD}── 修改侦听端口 ──${RESET}" >&2
+                local ports_str tcp_port udp_port ws_port wss_port
+                ports_str=$(prompt_listen_ports)
+                read -r tcp_port udp_port ws_port wss_port <<< "$ports_str"
 
-        apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
-        show_status
-        return
+                echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
+                echo -e "  主机名:   ${CYAN}${relay_hostname}${RESET}"
+                echo -e "  TCP 端口: ${CYAN}${tcp_port}${RESET}"
+                echo -e "  UDP 端口: ${CYAN}${udp_port}${RESET}"
+                echo -e "  WS  端口: ${CYAN}${ws_port}${RESET}"
+                echo -e "  WSS 端口: ${CYAN}${wss_port}${RESET}"
+                echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+                printf "${YELLOW}确认修改并重启服务？[Y/n]: ${RESET}" >&2
+                read -r ans </dev/tty
+                ans="${ans:-Y}"
+                [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消修改。"; return 0; }
+
+                apply_service "$MODE_RELAY" "$relay_hostname" "$tcp_port" "$udp_port" "$ws_port" "$wss_port"
+                show_status
+                return
+                ;;
+            2)
+                # 切换到客户端模式
+                local username
+                username=$(prompt_username)
+                local node_hostname
+                node_hostname=$(prompt_hostname)
+                local console_addr
+                console_addr=$(prompt_console)
+
+                echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
+                echo -e "  新模式:   ${CYAN}客户端模式（连接控制台）${RESET}"
+                echo -e "  用户名:   ${CYAN}${username}${RESET}"
+                echo -e "  机器名:   ${CYAN}${node_hostname}${RESET}"
+                echo -e "  控制台:   ${CYAN}${console_addr}${RESET}"
+                echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+                printf "${YELLOW}确认切换并重启服务？[Y/n]: ${RESET}" >&2
+                read -r ans </dev/tty
+                ans="${ans:-Y}"
+                [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+
+                apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
+                show_status
+                return
+                ;;
+            *)
+                info "已取消。"
+                return 0
+                ;;
+        esac
     fi
 
     info "当前为客户端模式，直接回车可保留现有值："
