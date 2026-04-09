@@ -548,21 +548,34 @@ prompt_ipv4() {
 prompt_peer_uri() {
     local cur default
     cur=$(read_current_conf_peer_uri)
-    default="${cur:-}"
+
+    # 默认服务器列表
+    local default_servers=(
+        "wss://qtet-public.070219.xyz"
+        "tcp://et2.sbgov.cn:11010"
+    )
 
     echo -e "\n${BOLD}── 配置节点服务器地址 (peer URI) ──${RESET}" >&2
     echo "  支持添加多个节点服务器地址" >&2
-    echo "  输入完成后直接回车确认\n" >&2
+    echo "  输入完成后直接回车确认" >&2
 
     local peers=()
     local idx=1
 
-    # 读取已有的 peer
-    if [ -n "$default" ]; then
-        IFS='|' read -ra existing <<< "$default"
+    # 读取已有的 peer（配置文件中已存在的）
+    if [ -n "$cur" ]; then
+        IFS='|' read -ra existing <<< "$cur"
         for p in "${existing[@]}"; do
             [ -n "$p" ] && peers+=("$p")
         done
+    else
+        # 首次配置，预填默认服务器
+        peers=("${default_servers[@]}")
+        echo -e "\n  ${CYAN}已预填默认服务器：${RESET}" >&2
+        for s in "${default_servers[@]}"; do
+            echo -e "    ${CYAN}${s}${RESET}" >&2
+        done
+        echo "" >&2
     fi
 
     while true; do
