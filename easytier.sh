@@ -732,6 +732,81 @@ prompt_encryption() {
 }
 
 # ----------------------------------------------------------------
+# 交互：配置文件模式 - 可选侦听端口（tcp/udp/ws/wss）
+# 返回格式: "tcp:端口|udp:端口|ws:端口" （用 | 分隔）
+# 某个协议直接回车=不设置；输入端口=开启侦听并自动启用转发
+# ----------------------------------------------------------------
+prompt_config_listen_ports() {
+    local result=""
+
+    echo -e "\n${BOLD}── 配置侦听端口（可选） ──${RESET}" >&2
+    info "如需让其他节点通过此设备连接（中继转发），可配置侦听端口。"
+    info "直接回车=不设置该协议；输入端口号=开启侦听并自动启用数据包转发。"
+    echo -e "  参考默认: tcp/udp=${CYAN}11010${RESET}, ws=${CYAN}11011${RESET}, wss=${CYAN}11012${RESET}\n" >&2
+
+    local val
+
+    # TCP
+    while true; do
+        printf "  TCP  侦听端口 (直接回车=不设置): " >&2
+        read -r val </dev/tty
+        if [ -z "$val" ]; then break; fi
+        if ! [[ "$val" =~ ^[0-9]+$ ]] || [ "$val" -lt 1 ] || [ "$val" -gt 65535 ]; then
+            warn "端口无效，请输入 1~65535 之间的整数。"
+            continue
+        fi
+        result="${result:+$result|}tcp:$val"
+        break
+    done
+
+    # UDP
+    while true; do
+        printf "  UDP  侦听端口 (直接回车=不设置): " >&2
+        read -r val </dev/tty
+        if [ -z "$val" ]; then break; fi
+        if ! [[ "$val" =~ ^[0-9]+$ ]] || [ "$val" -lt 1 ] || [ "$val" -gt 65535 ]; then
+            warn "端口无效，请输入 1~65535 之间的整数。"
+            continue
+        fi
+        result="${result:+$result|}udp:$val"
+        break
+    done
+
+    # WS
+    while true; do
+        printf "  WS   侦听端口 (直接回车=不设置): " >&2
+        read -r val </dev/tty
+        if [ -z "$val" ]; then break; fi
+        if ! [[ "$val" =~ ^[0-9]+$ ]] || [ "$val" -lt 1 ] || [ "$val" -gt 65535 ]; then
+            warn "端口无效，请输入 1~65535 之间的整数。"
+            continue
+        fi
+        result="${result:+$result|}ws:$val"
+        break
+    done
+
+    # WSS
+    while true; do
+        printf "  WSS  侦听端口 (直接回车=不设置): " >&2
+        read -r val </dev/tty
+        if [ -z "$val" ]; then break; fi
+        if ! [[ "$val" =~ ^[0-9]+$ ]] || [ "$val" -lt 1 ] || [ "$val" -gt 65535 ]; then
+            warn "端口无效，请输入 1~65535 之间的整数。"
+            continue
+        fi
+        result="${result:+$result|}wss:$val"
+        break
+    done
+
+    if [ -z "$result" ]; then
+        info "未配置任何侦听端口。"
+    else
+        info "已配置侦听: ${result}"
+    fi
+    echo "$result"
+}
+
+# ----------------------------------------------------------------
 # 生成配置文件 /etc/easytier/easytier.yaml
 # ----------------------------------------------------------------
 write_config_file() {
@@ -742,8 +817,35 @@ write_config_file() {
     local peer_uri="$5"
     local proxy_cidr="$6"
     local encryption="$7"
+    local listen_ports="${8:-}"  # 可选，格式: "tcp:11010|udp:11010|ws:11011"
+
+    # 判断是否需要开启转发（只要配置了任意侦听端口就启用）
+    local enable_relay="false"
+    if [ -n "$listen_ports" ]; then
+        enable_relay="true"
+    fi
 
     mkdir -p "$(dirname "$CONFIG_FILE")"
+
+    # 构建 listeners 数组内容
+    local listeners_content="[]"
+    if [ -n "$listen_ports" ]; then
+        listeners_content="["
+        IFS='|' read -ra LP <<< "$listen_ports"
+        local first_lp=true
+        for lp_entry in "${LP[@]}"; do
+            [ -z "$lp_entry" ] && continue
+            local proto="${lp_entry%%:*}"
+            local port="${lp_entry##*:}"
+            if $first_lp; then
+                listeners_content+="\"${proto}://0.0.0.0:${port}\""
+                first_lp=false
+            else
+                listeners_content+=", \"${proto}://0.0.0.0:${port}\""
+            fi
+        done
+        listeners_content+="]"
+    fi
 
     # 写入配置（TOML 格式）
     cat > "$CONFIG_FILE" <<EOF
@@ -753,7 +855,9 @@ write_config_file() {
 hostname = "${hostname}"
 ipv4 = "${ipv4_mode}"
 dhcp = $([ "$ipv4_mode" = "dhcp" ] && echo "true" || echo "false")
-listeners = []
+listeners = ${listeners_content}
+relay_network_whitelist = "*"
+enable_relay = ${enable_relay}
 
 [network_identity]
 network_name = "${network_name}"
@@ -835,12 +939,12 @@ _do_switch_to_console_mode() {
     echo -e "  机器名:   ${CYAN}${node_hostname}${RESET}"
     echo -e "  控制台:   ${CYAN}${console_addr}${RESET}"
     echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
-    printf "${YELLOW}确认切换并重启服务？[Y/n]: ${RESET}" >&2
+    printf "${YELLOW}确认切换并重启服务？（配置文件将保留，不再使用）[Y/n]: ${RESET}" >&2
     read -r ans </dev/tty
     ans="${ans:-Y}"
     [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
 
-    rm -f "$CONFIG_FILE"
+    # 不删除配置文件，保留以备后续切换回来使用
     apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
     show_status
 }
@@ -851,7 +955,7 @@ _do_switch_to_console_mode() {
 _do_switch_to_config_mode() {
     info "直接回车可保留当前值。"
 
-    local cfg_hostname cfg_netname cfg_netsec cfg_ip_mode cfg_peer cfg_proxy cfg_enc
+    local cfg_hostname cfg_netname cfg_netsec cfg_ip_mode cfg_peer cfg_proxy cfg_enc cfg_listen
 
     echo -e "\n${BOLD}── hostname ──${RESET}" >&2
     cfg_hostname=$(prompt_hostname)
@@ -861,6 +965,7 @@ _do_switch_to_config_mode() {
     cfg_peer=$(prompt_peer_uri)
     cfg_proxy=$(prompt_proxy_network)
     cfg_enc=$(prompt_encryption)
+    cfg_listen=$(prompt_config_listen_ports)
 
     echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
     echo -e "  新模式:   ${CYAN}客户端模式（配置文件）${RESET}"
@@ -868,8 +973,9 @@ _do_switch_to_config_mode() {
     echo -e "  网络名称: ${CYAN}${cfg_netname}${RESET}"
     echo -e "  网络密钥: ${CYAN}${cfg_netsec}${RESET}"
     echo -e "  IP 方式:  ${CYAN}${cfg_ip_mode}${RESET}"
-    [ -n "$cfg_peer"  ] && echo -e "  节点地址: ${CYAN}${cfg_peer}${RESET}"
+    [ -n "$cfg_peer"   ] && echo -e "  节点地址: ${CYAN}${cfg_peer}${RESET}"
     [ -n "$cfg_proxy" ] && echo -e "  子网代理: ${CYAN}${cfg_proxy}${RESET}"
+    [ -n "$cfg_listen"] && echo -e "  侦听端口: ${CYAN}${cfg_listen}${RESET}"
     echo -e "  启用加密: ${CYAN}${cfg_enc}${RESET}"
     echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
     printf "${YELLOW}确认切换并重启服务？[Y/n]: ${RESET}" >&2
@@ -877,8 +983,41 @@ _do_switch_to_config_mode() {
     ans="${ans:-Y}"
     [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
 
-    write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" "$cfg_ip_mode" "$cfg_peer" "$cfg_proxy" "$cfg_enc"
+    write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" "$cfg_ip_mode" "$cfg_peer" "$cfg_proxy" "$cfg_enc" "$cfg_listen"
     apply_service "$MODE_CONSOLE_FILE"
+    show_status
+}
+
+# ----------------------------------------------------------------
+# 切换到服务端/中继模式（do_modify 辅助函数）
+# ----------------------------------------------------------------
+_do_switch_to_relay_mode() {
+    info "直接回车可保留当前值。"
+
+    echo -e "\n${BOLD}── 配置服务端信息 ──${RESET}" >&2
+    local relay_hostname
+    relay_hostname=$(prompt_relay_hostname)
+
+    echo -e "\n${BOLD}── 配置侦听端口 ──${RESET}" >&2
+    local ports_str tcp_port udp_port ws_port wss_port
+    ports_str=$(prompt_listen_ports)
+    read -r tcp_port udp_port ws_port wss_port <<< "$ports_str"
+
+    echo -e "\n${BOLD}${CYAN}──────── 切换确认 ────────${RESET}"
+    echo -e "  新模式:   ${CYAN}服务端/中继模式${RESET}"
+    echo -e "  主机名:   ${CYAN}${relay_hostname}${RESET}"
+    echo -e "  TCP 端口: ${CYAN}${tcp_port}${RESET}"
+    echo -e "  UDP 端口: ${CYAN}${udp_port}${RESET}"
+    echo -e "  WS  端口: ${CYAN}${ws_port}${RESET}"
+    echo -e "  WSS 端口: ${CYAN}${wss_port}${RESET}"
+    echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+    printf "${YELLOW}确认切换并重启服务？（配置文件将保留，不再使用）[Y/n]: ${RESET}" >&2
+    read -r ans </dev/tty
+    ans="${ans:-Y}"
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+
+    # 不删除配置文件，保留以备后续切换回来使用
+    apply_service "$MODE_RELAY" "$relay_hostname" "$tcp_port" "$udp_port" "$ws_port" "$wss_port"
     show_status
 }
 
@@ -1462,6 +1601,10 @@ do_install() {
         local cfg_enc
         cfg_enc=$(prompt_encryption)
 
+        echo -e "\n${BOLD}── 第 8 步：配置侦听端口（可选） ──${RESET}" >&2
+        local cfg_listen
+        cfg_listen=$(prompt_config_listen_ports)
+
         echo -e "\n${BOLD}${CYAN}──────── 安装确认 ────────${RESET}"
         echo -e "  模式:     ${CYAN}客户端模式（配置文件）${RESET}"
         echo -e "  版本:     ${CYAN}${version}${RESET}"
@@ -1472,6 +1615,7 @@ do_install() {
         echo -e "  IP 方式:  ${CYAN}${cfg_ip_mode}${RESET}"
         [ -n "$cfg_peer"   ] && echo -e "  节点地址: ${CYAN}${cfg_peer}${RESET}"
         [ -n "$cfg_proxy"  ] && echo -e "  子网代理: ${CYAN}${cfg_proxy}${RESET}"
+        [ -n "$cfg_listen" ] && echo -e "  侦听端口: ${CYAN}${cfg_listen}${RESET}"
         echo -e "  启用加密: ${CYAN}${cfg_enc}${RESET}"
         echo -e "  配置文件: ${CYAN}${CONFIG_FILE}${RESET}"
         echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
@@ -1483,7 +1627,7 @@ do_install() {
         info "版本: $version | 架构: $ARCH | 下载方式: ${dm_label}"
         [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
         download_and_extract "$ARCH" "$version" "$download_method"
-        write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" "$cfg_ip_mode" "$cfg_peer" "$cfg_proxy" "$cfg_enc"
+        write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" "$cfg_ip_mode" "$cfg_peer" "$cfg_proxy" "$cfg_enc" "$cfg_listen"
         apply_service "$MODE_CONSOLE_FILE"
         show_status
         return
@@ -1615,8 +1759,9 @@ do_modify() {
         echo -e "  ${BOLD}${GREEN}1)${RESET} 修改组网信息（主机名 / 网络名称 / 网络密钥）"
         echo -e "  ${BOLD}${YELLOW}2)${RESET} 修改全部配置"
         echo -e "  ${BOLD}${CYAN}3)${RESET} 切换为Web控制台模式"
+        echo -e "  ${BOLD}${RED}4)${RESET} 切换为服务器/中继模式"
         echo -e "  ${BOLD}0)${RESET} 取消，返回主菜单"
-        printf "请输入选项 [0-3]: " >&2
+        printf "请输入选项 [0-4]: " >&2
         read -r cf_choice </dev/tty
 
         case "$cf_choice" in
@@ -1640,17 +1785,18 @@ do_modify() {
                 ans="${ans:-Y}"
                 [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消修改。"; return 0; }
 
-                # 仅更新组网相关字段，保留其他配置不变
-                local cur_cfg_netname cur_cfg_netsec cur_cfg_ip cur_cfg_peer cur_cfg_proxy_cidr cur_cfg_enc
+                # 仅更新组网相关字段，保留其他配置不变（包括侦听端口）
+                local cur_cfg_netname cur_cfg_netsec cur_cfg_ip cur_cfg_peer cur_cfg_proxy_cidr cur_cfg_enc cur_cfg_listen
                 cur_cfg_netname=$(read_current_network_name)
                 cur_cfg_netsec=$(read_current_network_secret)
                 cur_cfg_ip=$(read_current_conf_ipv4)
                 cur_cfg_peer=$(read_current_conf_peer_uri)
                 cur_cfg_proxy_cidr=$(read_current_conf_proxy_cidr)
                 cur_cfg_enc=$(read_current_conf_encryption)
+                cur_cfg_listen=$(_read_yaml_val "listeners" | grep -oP '://[^"]+' | sed 's|//0.0.0.0:||' | while read -r p; do echo "$p"; done | tr '\n' '|' | sed 's/|$//')
 
                 write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" \
-                    "${cur_cfg_ip:-automatic}" "${cur_cfg_peer:-}" "${cur_cfg_proxy_cidr:-false}" "$cur_cfg_enc"
+                    "${cur_cfg_ip:-automatic}" "${cur_cfg_peer:-}" "${cur_cfg_proxy_cidr:-false}" "$cur_cfg_enc" "${cur_cfg_listen:-}"
                 apply_service "$MODE_CONSOLE_FILE"
                 show_status
                 return
@@ -1671,6 +1817,8 @@ do_modify() {
                 local cfg_proxy; cfg_proxy=$(prompt_proxy_network)
                 echo -e "\n${BOLD}── 修改加密设置 ──${RESET}" >&2
                 local cfg_enc; cfg_enc=$(prompt_encryption)
+                echo -e "\n${BOLD}── 修改侦听端口 ──${RESET}" >&2
+                local cfg_listen; cfg_listen=$(prompt_config_listen_ports)
 
                 echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
                 echo -e "  主机名:   ${CYAN}${cfg_hostname}${RESET}"
@@ -1679,6 +1827,7 @@ do_modify() {
                 echo -e "  IP 方式:  ${CYAN}${cfg_ip_mode}${RESET}"
                 [ -n "$cfg_peer"   ] && echo -e "  节点地址: ${CYAN}${cfg_peer}${RESET}"
                 [ -n "$cfg_proxy"  ] && echo -e "  子网代理: ${CYAN}${cfg_proxy}${RESET}"
+                [ -n "$cfg_listen"] && echo -e "  侦听端口: ${CYAN}${cfg_listen}${RESET}"
                 echo -e "  启用加密: ${CYAN}${cfg_enc}${RESET}"
                 echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
                 printf "${YELLOW}确认修改并重启服务？[Y/n]: ${RESET}" >&2
@@ -1686,7 +1835,7 @@ do_modify() {
                 ans="${ans:-Y}"
                 [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消修改。"; return 0; }
 
-                write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" "$cfg_ip_mode" "$cfg_peer" "$cfg_proxy" "$cfg_enc"
+                write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" "$cfg_ip_mode" "$cfg_peer" "$cfg_proxy" "$cfg_enc" "$cfg_listen"
                 apply_service "$MODE_CONSOLE_FILE"
                 show_status
                 return
@@ -1694,6 +1843,11 @@ do_modify() {
             3)
                 echo -e "\n${BOLD}── 切换为 Web控制台模式 ──${RESET}" >&2
                 _do_switch_to_console_mode
+                return
+                ;;
+            4)
+                echo -e "\n${BOLD}── 切换为服务器/中继模式 ──${RESET}" >&2
+                _do_switch_to_relay_mode
                 return
                 ;;
             *)
@@ -1707,8 +1861,9 @@ do_modify() {
     echo -e "${BOLD}当前为Web控制台模式，可执行以下操作：${RESET}" >&2
     echo -e "  ${BOLD}${GREEN}1)${RESET} 修改控制台信息（用户名 / 机器名 / 控制台地址）"
     echo -e "  ${BOLD}${YELLOW}2)${RESET} 切换为配置文件模式"
+    echo -e "  ${BOLD}${RED}3)${RESET} 切换为服务器/中继模式"
     echo -e "  ${BOLD}0)${RESET} 取消，返回主菜单"
-    printf "请输入选项 [0-2]: " >&2
+    printf "请输入选项 [0-3]: " >&2
     read -r console_choice </dev/tty
 
     case "$console_choice" in
@@ -1744,6 +1899,11 @@ do_modify() {
         2)
             echo -e "\n${BOLD}── 切换为配置文件模式 ──${RESET}" >&2
             _do_switch_to_config_mode
+            return
+            ;;
+        3)
+            echo -e "\n${BOLD}── 切换为服务器/中继模式 ──${RESET}" >&2
+            _do_switch_to_relay_mode
             return
             ;;
         *)
