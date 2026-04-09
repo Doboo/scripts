@@ -317,12 +317,13 @@ main_menu() {
         echo -e "  ${BOLD}${GREEN}2)${RESET} 全新安装 - 服务端模式（独立中继，不连控制台）"
         echo -e "  ${BOLD}${YELLOW}3)${RESET} 修改配置"
         echo -e "  ${BOLD}${CYAN}4)${RESET} 更新程序（保留配置）"
-        echo -e "  ${BOLD}${RED}5)${RESET} 卸载 EasyTier"
+        echo -e "  ${BOLD}5)${RESET} 卸载 EasyTier"
         echo -e "  ${BOLD}6)${RESET} 查看运行日志"
         echo -e "  ${BOLD}7)${RESET} 重启服务"
+        echo -e "  ${BOLD}8)${RESET} 查看组网信息（peer 列表）"
         echo -e "  ${BOLD}0)${RESET} 退出"
         echo
-        printf "请输入选项 [0-7]: "
+        printf "请输入选项 [0-8]: "
         read -r choice </dev/tty
 
         case "$choice" in
@@ -333,12 +334,13 @@ main_menu() {
             5) do_uninstall;;
             6) do_show_log ;;
             7) do_restart  ;;
+            8) do_show_peer ;;
             0)
                 echo -e "\n${GREEN}再见！${RESET}"
                 exit 0
                 ;;
             *)
-                warn "无效选项 '${choice}'，请输入 0~7。"
+                warn "无效选项 '${choice}'，请输入 0~8。"
                 sleep 1
                 ;;
         esac
@@ -641,28 +643,68 @@ prompt_peer_uri() {
     echo "$result"
 }
 
-# 子网代理
+# 子网代理（支持多个 CIDR，用 | 分隔）
 prompt_proxy_network() {
-    local cur default
+    local cur
     cur=$(read_current_conf_proxy_cidr)
-    default="$cur"
+
+    echo -e "\n${BOLD}── 配置子网代理地址 (proxy_network) ──${RESET}" >&2
+    echo "  可添加多个子网段，输入完成后直接回车结束" >&2
+
+    local proxies=()
+
+    # 加载已有的子网代理配置
+    if [ -n "$cur" ] && [[ "$cur" == *"|"* ]]; then
+        IFS='|' read -ra existing <<< "$cur"
+        for p in "${existing[@]}"; do
+            [ -n "$p" ] && proxies+=("$p")
+        done
+        echo -e "\n  ${CYAN}已加载现有子网代理配置${RESET}" >&2
+    elif [ -n "$cur" ]; then
+        # 单个已有值
+        proxies+=("$cur")
+        echo -e "\n  ${CYAN}已加载现有子网代理配置${RESET}" >&2
+    fi
+
+    local idx=1
+    if [ ${#proxies[@]} -eq 0 ]; then
+        idx=1
+    else
+        idx=${#proxies[@]}
+    fi
 
     while true; do
-        printf "是否配置子网代理？如需访问本机局域网请输入 CIDR，否则直接回车跳过:\n" >&2
-        printf "  (例如: ${CYAN}192.168.1.0/24${RESET}，直接回车跳过): " >&2
-        read -r val </dev/tty
-        val="${val:-$default}"
-        if [ -z "$val" ]; then
-            echo ""
-            return
+        local cur_val="${proxies[$((idx-1))]:-}"
+        if [ "$idx" -le "${#proxies[@]}" ]; then
+            # 已有值：允许修改
+            printf "  子网 %d (当前: ${CYAN}%s${RESET})\n" "$idx" "$cur_val" >&2
+            printf "  输入新地址或直接回车保留: " >&2
+            read -r val </dev/tty
+            [ -n "$val" ] && proxies[$((idx-1))]="$val"
+        else
+            # 新添加：空则结束
+            printf "  子网 %d (输入新的 CIDR 地址如: ${CYAN}10.0.0.0/16${RESET})\n" "$idx" >&2
+            printf "  或直接回车完成输入: " >&2
+            read -r val </dev/tty
+            [ -z "$val" ] && break
+            if ! [[ "$val" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
+                warn "CIDR 格式无效，请输入类似 192.168.1.0/24 的格式。"
+                continue
+            fi
+            proxies+=("$val")
         fi
-        if ! [[ "$val" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
-            warn "CIDR 格式无效，请输入类似 192.168.1.0/24 的格式。"
-            continue
-        fi
-        echo "$val"
-        return
+        idx=$((idx+1))
     done
+
+    # 返回用 | 分隔的字符串
+    if [ ${#proxies[@]} -eq 0 ]; then
+        echo ""
+    else
+        local result
+        printf -v result '%s|' "${proxies[@]}"
+        result="${result%|}"
+        echo "$result"
+    fi
 }
 
 # 是否启用加密
@@ -741,13 +783,28 @@ EOF
         done
     fi
 
-    # 子网代理（可选）
+    # 子网代理（可选，支持多个）
     if [ -n "$proxy_cidr" ]; then
-        cat >> "$CONFIG_FILE" <<EOF
+        if [[ "$proxy_cidr" == *"|"* ]]; then
+            # 多个子网代理（用 | 分隔）
+            IFS='|' read -ra PROXIES <<< "$proxy_cidr"
+            local first_proxy=true
+            for p in "${PROXIES[@]}"; do
+                [ -z "$p" ] && continue
+                cat >> "$CONFIG_FILE" <<EOF
+
+[[proxy_network]]
+cidr = "${p}"
+EOF
+            done
+        else
+            # 单个子网代理
+            cat >> "$CONFIG_FILE" <<EOF
 
 [[proxy_network]]
 cidr = "${proxy_cidr}"
 EOF
+        fi
     fi
 
     cat >> "$CONFIG_FILE" <<EOF
@@ -1859,6 +1916,28 @@ do_restart() {
     fi
 
     show_status
+}
+
+# ================================================================
+# 操作：查看组网信息（peer 列表）
+# ================================================================
+do_show_peer() {
+    title "查看 EasyTier 组网信息"
+
+    if [ ! -f "${INSTALL_DIR}/easytier-cli" ]; then
+        error "未找到 easytier-cli 工具，无法查询组网信息。"
+        info "请先执行【全新安装】或【更新程序】安装完整工具包。"
+        return 1
+    fi
+
+    if ! systemctl is-active "$SERVICE_NAME" &>/dev/null; then
+        warn "EasyTier 服务当前未运行，尝试查询可能失败..."
+    fi
+
+    echo -e "\n${BOLD}────────── 组网 Peer 列表 ──────────${RESET}" >&2
+    echo -e "  正在执行: ${INSTALL_DIR}/easytier-cli peer\n" >&2
+    "${INSTALL_DIR}/easytier-cli" peer 2>&1 || true
+    echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
 }
 
 # ================================================================
