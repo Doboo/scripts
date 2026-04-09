@@ -857,7 +857,6 @@ ipv4 = "${ipv4_mode}"
 dhcp = $([ "$ipv4_mode" = "dhcp" ] && echo "true" || echo "false")
 listeners = ${listeners_content}
 relay_network_whitelist = "*"
-enable_relay = ${enable_relay}
 relay_all_peer_rpc = ${enable_relay}
 
 [network_identity]
