@@ -119,8 +119,8 @@ read_current_config() {
         echo ""
         return
     fi
-    # 匹配 -w "协议://地址/用户名" 中的 协议://地址 部分
-    grep -oP '(?<=-w ")[^/]+' "$SERVICE_FILE" 2>/dev/null || echo ""
+    # 匹配 -w "协议://地址/用户名" 中的 协议://地址:端口 部分
+    grep -oP '(?<=-w ")[^/]+://[^/]+(?=/)' "$SERVICE_FILE" 2>/dev/null || echo ""
 }
 
 read_current_username() {
