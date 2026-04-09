@@ -319,9 +319,10 @@ main_menu() {
         echo -e "  ${BOLD}${CYAN}4)${RESET} 更新程序（保留配置）"
         echo -e "  ${BOLD}${RED}5)${RESET} 卸载 EasyTier"
         echo -e "  ${BOLD}6)${RESET} 查看运行日志"
+        echo -e "  ${BOLD}7)${RESET} 重启服务"
         echo -e "  ${BOLD}0)${RESET} 退出"
         echo
-        printf "请输入选项 [0-6]: "
+        printf "请输入选项 [0-7]: "
         read -r choice </dev/tty
 
         case "$choice" in
@@ -331,12 +332,13 @@ main_menu() {
             4) do_update   ;;
             5) do_uninstall;;
             6) do_show_log ;;
+            7) do_restart  ;;
             0)
                 echo -e "\n${GREEN}再见！${RESET}"
                 exit 0
                 ;;
             *)
-                warn "无效选项 '${choice}'，请输入 0~6。"
+                warn "无效选项 '${choice}'，请输入 0~7。"
                 sleep 1
                 ;;
         esac
@@ -1553,14 +1555,50 @@ do_modify() {
     # 配置文件模式
     if [ "$cur_mode" = "$MODE_CONSOLE_FILE" ]; then
         echo -e "${BOLD}当前为客户端模式（配置文件），可执行以下操作：${RESET}" >&2
-        echo -e "  ${BOLD}${GREEN}1)${RESET} 修改配置文件参数"
-        echo -e "  ${BOLD}${YELLOW}2)${RESET} 切换为Web控制台模式"
+        echo -e "  ${BOLD}${GREEN}1)${RESET} 修改组网信息（主机名 / 网络名称 / 网络密钥）"
+        echo -e "  ${BOLD}${YELLOW}2)${RESET} 修改全部配置"
+        echo -e "  ${BOLD}${CYAN}3)${RESET} 切换为Web控制台模式"
         echo -e "  ${BOLD}0)${RESET} 取消，返回主菜单"
-        printf "请输入选项 [0/1/2]: " >&2
+        printf "请输入选项 [0-3]: " >&2
         read -r cf_choice </dev/tty
 
         case "$cf_choice" in
             1)
+                # 仅修改组网相关参数
+                info "直接回车可保留当前值。"
+                echo -e "\n${BOLD}── 修改主机名 ──${RESET}" >&2
+                local cfg_hostname; cfg_hostname=$(prompt_hostname)
+                echo -e "\n${BOLD}── 修改网络名称 ──${RESET}" >&2
+                local cfg_netname; cfg_netname=$(prompt_network_name)
+                echo -e "\n${BOLD}── 修改网络密钥 ──${RESET}" >&2
+                local cfg_netsec; cfg_netsec=$(prompt_network_secret)
+
+                echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
+                echo -e "  主机名:   ${CYAN}${cfg_hostname}${RESET}"
+                echo -e "  网络名称: ${CYAN}${cfg_netname}${RESET}"
+                echo -e "  网络密钥: ${CYAN}${cfg_netsec}${RESET}"
+                echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+                printf "${YELLOW}确认修改并重启服务？[Y/n]: ${RESET}" >&2
+                read -r ans </dev/tty
+                ans="${ans:-Y}"
+                [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消修改。"; return 0; }
+
+                # 仅更新组网相关字段，保留其他配置不变
+                local cur_cfg_netname cur_cfg_netsec cur_cfg_ip cur_cfg_peer cur_cfg_proxy_cidr cur_cfg_enc
+                cur_cfg_netname=$(read_current_network_name)
+                cur_cfg_netsec=$(read_current_network_secret)
+                cur_cfg_ip=$(read_current_conf_ipv4)
+                cur_cfg_peer=$(read_current_conf_peer_uri)
+                cur_cfg_proxy_cidr=$(read_current_conf_proxy_cidr)
+                cur_cfg_enc=$(read_current_conf_encryption)
+
+                write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" \
+                    "${cur_cfg_ip:-automatic}" "${cur_cfg_peer:-}" "${cur_cfg_proxy_cidr:-false}" "$cur_cfg_enc"
+                apply_service "$MODE_CONSOLE_FILE"
+                show_status
+                return
+                ;;
+            2)
                 info "直接回车可保留当前值。"
                 echo -e "\n${BOLD}── 修改 hostname ──${RESET}" >&2
                 local cfg_hostname; cfg_hostname=$(prompt_hostname)
@@ -1596,7 +1634,7 @@ do_modify() {
                 show_status
                 return
                 ;;
-            2)
+            3)
                 echo -e "\n${BOLD}── 切换为 Web控制台模式 ──${RESET}" >&2
                 _do_switch_to_console_mode
                 return
@@ -1770,6 +1808,35 @@ do_show_log() {
             journalctl -u "${SERVICE_NAME}.service" -n 50 --no-pager 2>/dev/null || true
             ;;
     esac
+}
+
+# ================================================================
+# 操作：重启服务
+# ================================================================
+do_restart() {
+    title "重启 EasyTier 服务"
+
+    if ! systemctl is-active "$SERVICE_NAME" &>/dev/null && ! systemctl is-failed "$SERVICE_NAME" &>/dev/null; then
+        warn "服务尚未安装，请先执行【全新安装】。"
+        return 0
+    fi
+
+    printf "${YELLOW}确认重启服务？[Y/n]: ${RESET}" >&2
+    read -r ans </dev/tty
+    ans="${ans:-Y}"
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+
+    info "重新加载 systemd 配置..."
+    systemctl daemon-reload
+
+    info "正在重启服务..."
+    if ! systemctl restart "$SERVICE_NAME"; then
+        error "服务重启失败，请检查日志。"
+        info "查看日志：journalctl -xe -u ${SERVICE_NAME}.service"
+        return 1
+    fi
+
+    show_status
 }
 
 # ================================================================
