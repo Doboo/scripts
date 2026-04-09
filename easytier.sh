@@ -584,7 +584,7 @@ prompt_peer_uri() {
     cur=$(read_current_conf_peer_uri)
 
     # 预填的默认节点1
-    local default_node1="wss://qtet-public.07219.xyz"
+    local default_node1="tcp://et.sbgov.cn:11010"
 
     echo -e "\n${BOLD}── 配置节点服务器地址 (peer URI) ──${RESET}" >&2
     echo "  支持添加多个节点服务器地址" >&2
