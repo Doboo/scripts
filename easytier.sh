@@ -1646,32 +1646,54 @@ do_modify() {
         esac
     fi
 
-    info "当前为Web控制台模式，直接回车可保留现有值："
+    # Web控制台模式
+    echo -e "${BOLD}当前为Web控制台模式，可执行以下操作：${RESET}" >&2
+    echo -e "  ${BOLD}${GREEN}1)${RESET} 修改控制台信息（用户名 / 机器名 / 控制台地址）"
+    echo -e "  ${BOLD}${YELLOW}2)${RESET} 切换为配置文件模式"
+    echo -e "  ${BOLD}0)${RESET} 取消，返回主菜单"
+    printf "请输入选项 [0-2]: " >&2
+    read -r console_choice </dev/tty
 
-    echo -e "\n${BOLD}── 节点信息 ──${RESET}" >&2
-    local username
-    username=$(prompt_username)
+    case "$console_choice" in
+        1)
+            info "当前为Web控制台模式，直接回车可保留现有值："
 
-    local node_hostname
-    node_hostname=$(prompt_hostname)
+            echo -e "\n${BOLD}── 节点信息 ──${RESET}" >&2
+            local username
+            username=$(prompt_username)
 
-    echo -e "\n${BOLD}── 控制台地址 ──${RESET}" >&2
-    local console_addr
-    console_addr=$(prompt_console)
+            local node_hostname
+            node_hostname=$(prompt_hostname)
 
-    # 确认信息
-    echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
-    echo -e "  用户名:   ${CYAN}${username}${RESET}"
-    echo -e "  机器名:   ${CYAN}${node_hostname}${RESET}"
-    echo -e "  控制台:   ${CYAN}${console_addr}${RESET}"
-    echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
-    printf "${YELLOW}确认修改并重启服务？[Y/n]: ${RESET}" >&2
-    read -r ans </dev/tty
-    ans="${ans:-Y}"
-    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消修改。"; return 0; }
+            echo -e "\n${BOLD}── 控制台地址 ──${RESET}" >&2
+            local console_addr
+            console_addr=$(prompt_console)
 
-    apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
-    show_status
+            # 确认信息
+            echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
+            echo -e "  用户名:   ${CYAN}${username}${RESET}"
+            echo -e "  机器名:   ${CYAN}${node_hostname}${RESET}"
+            echo -e "  控制台:   ${CYAN}${console_addr}${RESET}"
+            echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+            printf "${YELLOW}确认修改并重启服务？[Y/n]: ${RESET}" >&2
+            read -r ans </dev/tty
+            ans="${ans:-Y}"
+            [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消修改。"; return 0; }
+
+            apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
+            show_status
+            return
+            ;;
+        2)
+            echo -e "\n${BOLD}── 切换为配置文件模式 ──${RESET}" >&2
+            _do_switch_to_config_mode
+            return
+            ;;
+        *)
+            info "已取消。"
+            return 0
+            ;;
+    esac
 }
 
 # ================================================================
