@@ -580,14 +580,11 @@ prompt_ipv4() {
 # 节点服务器地址（peer URI，支持多个）
 # 返回格式: peer1|peer2|peer3 (用 | 分隔)
 prompt_peer_uri() {
-    local cur default
+    local cur
     cur=$(read_current_conf_peer_uri)
 
-    # 默认服务器列表
-    local default_servers=(
-        "wss://qtet-public.070219.xyz"
-        "tcp://et2.sbgov.cn:11010"
-    )
+    # 预填的默认节点1
+    local default_node1="wss://qtet-public.07219.xyz"
 
     echo -e "\n${BOLD}── 配置节点服务器地址 (peer URI) ──${RESET}" >&2
     echo "  支持添加多个节点服务器地址" >&2
@@ -602,24 +599,33 @@ prompt_peer_uri() {
         for p in "${existing[@]}"; do
             [ -n "$p" ] && peers+=("$p")
         done
+        echo -e "\n  ${CYAN}已加载现有节点配置${RESET}" >&2
     else
-        # 首次配置，预填默认服务器
-        peers=("${default_servers[@]}")
-        echo -e "\n  ${CYAN}已预填默认服务器：${RESET}" >&2
-        for s in "${default_servers[@]}"; do
-            echo -e "    ${CYAN}${s}${RESET}" >&2
-        done
-        echo "" >&2
+        # 首次配置：预填节点1，节点2要求手动输入
+        peers=("$default_node1")
+        echo -e "\n  ${CYAN}节点1已预填：${default_node1}${RESET}" >&2
     fi
 
     while true; do
         local cur_val="${peers[$((idx-1))]:-}"
         if [ "$idx" -le "${#peers[@]}" ]; then
+            # 已有节点：允许修改
             printf "  节点 %d (当前: ${CYAN}%s${RESET})\n" "$idx" "$cur_val" >&2
             printf "  输入新地址或直接回车保留: " >&2
             read -r val </dev/tty
             [ -n "$val" ] && peers[$((idx-1))]="$val"
+        elif [ "$idx" -eq 2 ]; then
+            # 节点2（首次配置时）：强制要求输入
+            printf "  节点 %d (请输入第二个节点地址，如: ${CYAN}tcp://1.2.3.4:11010${RESET})\n" "$idx" >&2
+            printf "  输入地址: " >&2
+            read -r val </dev/tty
+            if [ -z "$val" ]; then
+                warn "节点2地址不能为空，请重新输入。"
+                continue
+            fi
+            peers+=("$val")
         else
+            # 更多节点：可选添加
             printf "  节点 %d (新添加，输入地址如: ${CYAN}udp://1.2.3.4:11010${RESET})\n" "$idx" >&2
             printf "  或直接回车完成输入: " >&2
             read -r val </dev/tty
