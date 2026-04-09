@@ -615,14 +615,11 @@ prompt_peer_uri() {
             read -r val </dev/tty
             [ -n "$val" ] && peers[$((idx-1))]="$val"
         elif [ "$idx" -eq 2 ]; then
-            # 节点2（首次配置时）：强制要求输入
-            printf "  节点 %d (请输入第二个节点地址，如: ${CYAN}tcp://1.2.3.4:11010${RESET})\n" "$idx" >&2
+            # 节点2：可选，空则结束节点输入
+            printf "  节点 %d (输入第二个节点地址，或直接回车完成填写)\n" "$idx" >&2
             printf "  输入地址: " >&2
             read -r val </dev/tty
-            if [ -z "$val" ]; then
-                warn "节点2地址不能为空，请重新输入。"
-                continue
-            fi
+            [ -z "$val" ] && break
             peers+=("$val")
         else
             # 更多节点：可选添加
