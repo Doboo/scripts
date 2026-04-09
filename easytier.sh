@@ -12,8 +12,7 @@ readonly INSTALL_DIR="/root/easytier"
 readonly SERVICE_FILE="/etc/systemd/system/easytier.service"
 readonly SERVICE_NAME="easytier"
 readonly CONFIG_FILE="/etc/easytier/easytier.yaml"
-readonly DEFAULT_CONSOLE_HOST="wss://etcfgs.38196962.xyz"
-readonly DEFAULT_CONSOLE_PORT="0"
+readonly DEFAULT_CONSOLE_HOST="udp://cfgs.175419.xyz:22022"
 readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
 
 # 服务运行模式
@@ -407,46 +406,79 @@ prompt_hostname() {
 }
 
 # ----------------------------------------------------------------
-# 交互：输入控制台地址
+# 交互：输入控制台地址（三选一 + 手动输入）
 # ----------------------------------------------------------------
 prompt_console() {
-    local cur_console cur_host cur_port
+    local cur_console
     cur_console=$(read_current_config)
 
-    if [ -n "$cur_console" ]; then
-        # 去掉协议前缀后再解析 host:port
-        local stripped="${cur_console#*://}"
-        cur_host="${cur_console%:*}"   # 保留完整前缀（含 wss:// 等）
-        cur_port="${stripped##*:}"
-        # 若端口解析失败（没有冒号），则置空
-        [[ "$cur_port" =~ ^[0-9]+$ ]] || cur_port=""
-    else
-        cur_host="$DEFAULT_CONSOLE_HOST"
-        cur_port="$DEFAULT_CONSOLE_PORT"
-    fi
+    # 预定义选项
+    local -a OPTIONS
+    OPTIONS[1]="udp://cfgs.175419.xyz:22022"
+    OPTIONS[2]="wss://etcfgs.38196962.xyz:0"
+    OPTIONS[3]=""
 
-    local host port
+    # 判断当前配置匹配哪个选项
+    local selected=""
+    for i in 1 2 3; do
+        if [ -n "$cur_console" ] && [ "$cur_console" = "${OPTIONS[$i]}" ]; then
+            selected="$i"
+            break
+        fi
+    done
+    selected="${selected:-1}"  # 默认选1
 
     while true; do
-        printf "请输入控制台地址 (当前: ${CYAN}%s${RESET}，直接回车保留): " "$cur_host" >&2
-        read -r host </dev/tty
-        host="${host:-$cur_host}"
-        if [[ "$host" =~ [[:space:]] ]]; then
+        echo -e "\n${BOLD}── 选择控制台地址 ──${RESET}" >&2
+        echo -e "  ${CYAN}1${RESET}) udp://cfgs.175419.xyz:22022" >&2
+        echo -e "  ${CYAN}2${RESET}) wss://etcfgs.38196962.xyz:0" >&2
+        echo -e "  ${CYAN}3${RESET}) 手动填写" >&2
+        [ -n "$cur_console" ] && echo -e "\n  当前配置: ${CYAN}${cur_console}${RESET}" >&2
+        printf "请选择 (1/2/3，直接回车默认 ${CYAN}%s${RESET}): " "$selected" >&2
+        read -r choice </dev/tty
+        choice="${choice:-$selected}"
+
+        case "$choice" in
+            1)
+                info "已选择: ${OPTIONS[1]}"
+                echo "${OPTIONS[1]}"
+                return
+                ;;
+            2)
+                info "已选择: ${OPTIONS[2]}"
+                echo "${OPTIONS[2]}"
+                return
+                ;;
+            3)
+                break
+                ;;
+            *)
+                warn "无效选择，请输入 1、2 或 3。"
+                continue
+                ;;
+        esac
+    done
+
+    # 手动输入模式
+    local manual=""
+    while true; do
+        [ -n "$cur_console" ] && printf "请输入控制台地址 (当前: ${CYAN}%s${RESET}，直接回车保留): " "$cur_console" >&2 \
+                               || printf "请输入控制台地址 (例: ${CYAN}udp://1.2.3.4:22022${RESET}): " >&2
+        read -r manual </dev/tty
+        manual="${manual:-$cur_console}"
+        if [ -z "$manual" ]; then
+            warn "地址不能为空，请重新输入。"
+            continue
+        fi
+        if [[ "$manual" =~ [[:space:]] ]]; then
             warn "地址不能包含空格，请重新输入。"
             continue
         fi
         break
     done
 
-    while true; do
-        printf "请输入控制台端口号 (当前: ${CYAN}%s${RESET}，直接回车保留): " "$cur_port" >&2
-        read -r port </dev/tty
-        port="${port:-$cur_port}"
-        break
-    done
-
-    info "控制台地址: ${host}:${port}"
-    echo "${host}:${port}"
+    info "控制台地址: ${manual}"
+    echo "$manual"
 }
 
 # ----------------------------------------------------------------
