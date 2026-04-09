@@ -128,7 +128,8 @@ read_current_username() {
         echo ""
         return
     fi
-    grep -oP '(?<=udp://[^/]{1,200}/)([^"]+)' "$SERVICE_FILE" 2>/dev/null | head -1 || echo ""
+    # 匹配 -w "协议://地址/用户名" 中的用户名部分
+    grep -oP '(?<=-w ")[^/]+/([^"]+)' "$SERVICE_FILE" 2>/dev/null | sed 's/^[^/]*\///' | head -1 || echo ""
 }
 
 read_current_hostname() {
@@ -1221,6 +1222,31 @@ show_status() {
     done
 
     echo -e "${GREEN}${BOLD}✓ 操作成功，服务运行正常！${RESET}" >&2
+
+    # 显示当前配置信息
+    local cur_mode cur_console cur_user cur_hostname
+    cur_mode=$(read_current_mode)
+    cur_console=$(read_current_config)
+    cur_user=$(read_current_username)
+    cur_hostname=$(read_current_hostname)
+
+    if [ -n "$cur_mode" ]; then
+        echo -e "\n${BOLD}────────── 当前配置信息 ──────────${RESET}" >&2
+        if [ "$cur_mode" = "$MODE_RELAY" ]; then
+            echo -e "  ${CYAN}服务端/中继模式${RESET}" >&2
+            [ -n "$cur_hostname" ] && echo -e "  主机名:   ${CYAN}${cur_hostname}${RESET}" >&2
+        elif [ "$cur_mode" = "$MODE_CONSOLE_FILE" ]; then
+            echo -e "  模式:     ${CYAN}客户端模式（配置文件）${RESET}" >&2
+            [ -n "$cur_hostname" ] && echo -e "  主机名:   ${CYAN}${cur_hostname}${RESET}" >&2
+        else
+            echo -e "  模式:     ${CYAN}Web控制台模式${RESET}" >&2
+            [ -n "$cur_console" ] && echo -e "  控制台:   ${CYAN}${cur_console}${RESET}" >&2
+            [ -n "$cur_user" ] && echo -e "  用户名:   ${CYAN}${cur_user}${RESET}" >&2
+            [ -n "$cur_hostname" ] && echo -e "  主机名:   ${CYAN}${cur_hostname}${RESET}" >&2
+        fi
+        echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
+    fi
+
     success "EasyTier 已成功连接并启动。"
     info "如需持续监控日志，运行:"
     echo "    journalctl -f -u ${SERVICE_NAME}.service" >&2
