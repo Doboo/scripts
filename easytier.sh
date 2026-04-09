@@ -12,8 +12,8 @@ readonly INSTALL_DIR="/root/easytier"
 readonly SERVICE_FILE="/etc/systemd/system/easytier.service"
 readonly SERVICE_NAME="easytier"
 readonly CONFIG_FILE="/etc/easytier/easytier.yaml"
-readonly DEFAULT_CONSOLE_HOST="cfgs.175419.xyz"
-readonly DEFAULT_CONSOLE_PORT="22020"
+readonly DEFAULT_CONSOLE_HOST="wss://etcfgs.38196962.xyz"
+readonly DEFAULT_CONSOLE_PORT="0"
 readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
 
 # 服务运行模式
@@ -120,7 +120,8 @@ read_current_config() {
         echo ""
         return
     fi
-    grep -oP '(?<=-w "udp://)[^/]+' "$SERVICE_FILE" 2>/dev/null || echo ""
+    # 匹配 -w "协议://地址/用户名" 中的 协议://地址 部分
+    grep -oP '(?<=-w ")[^/]+' "$SERVICE_FILE" 2>/dev/null || echo ""
 }
 
 read_current_username() {
@@ -413,8 +414,12 @@ prompt_console() {
     cur_console=$(read_current_config)
 
     if [ -n "$cur_console" ]; then
-        cur_host="${cur_console%%:*}"
-        cur_port="${cur_console##*:}"
+        # 去掉协议前缀后再解析 host:port
+        local stripped="${cur_console#*://}"
+        cur_host="${cur_console%:*}"   # 保留完整前缀（含 wss:// 等）
+        cur_port="${stripped##*:}"
+        # 若端口解析失败（没有冒号），则置空
+        [[ "$cur_port" =~ ^[0-9]+$ ]] || cur_port=""
     else
         cur_host="$DEFAULT_CONSOLE_HOST"
         cur_port="$DEFAULT_CONSOLE_PORT"
@@ -423,22 +428,22 @@ prompt_console() {
     local host port
 
     while true; do
-        printf "请输入控制台 IP 或域名 (当前: ${CYAN}%s${RESET}，直接回车保留): " "$cur_host" >&2
+        printf "请输入控制台地址 (当前: ${CYAN}%s${RESET}，直接回车保留): " "$cur_host" >&2
         read -r host </dev/tty
         host="${host:-$cur_host}"
         if [[ "$host" =~ [[:space:]] ]]; then
-            warn "IP/域名不能包含空格，请重新输入。"
+            warn "地址不能包含空格，请重新输入。"
             continue
         fi
         break
     done
 
     while true; do
-        printf "请输入控制台端口号 (当前: ${CYAN}%s${RESET}，直接回车保留): " "$cur_port" >&2
+        printf "请输入控制台端口号 (当前: ${CYAN}%s${RESET}，直接回车保留，填0表示不指定端口): " "$cur_port" >&2
         read -r port </dev/tty
         port="${port:-$cur_port}"
-        if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-            warn "端口号无效（需为 1~65535 之间的整数），请重新输入。"
+        if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -gt 65535 ]; then
+            warn "端口号无效（需为 0~65535 之间的整数），请重新输入。"
             continue
         fi
         break
@@ -1115,6 +1120,13 @@ EOF
         local username="$2"
         local node_hostname="$3"
         local console_addr="$4"
+        # 若端口为 0，去掉 :0 后缀（交由协议默认端口）
+        local console_url
+        if [[ "$console_addr" == *:0 ]]; then
+            console_url="${console_addr%:0}"
+        else
+            console_url="$console_addr"
+        fi
         cat <<EOF
 [Unit]
 Description=EasyTier Service
@@ -1123,7 +1135,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/easytier-core -w "udp://${console_addr}/${username}" --hostname "${node_hostname}"
+ExecStart=${INSTALL_DIR}/easytier-core -w "${console_url}/${username}" --hostname "${node_hostname}"
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
