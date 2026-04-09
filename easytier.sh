@@ -439,13 +439,9 @@ prompt_console() {
     done
 
     while true; do
-        printf "请输入控制台端口号 (当前: ${CYAN}%s${RESET}，直接回车保留，填0表示不指定端口): " "$cur_port" >&2
+        printf "请输入控制台端口号 (当前: ${CYAN}%s${RESET}，直接回车保留): " "$cur_port" >&2
         read -r port </dev/tty
         port="${port:-$cur_port}"
-        if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -gt 65535 ]; then
-            warn "端口号无效（需为 0~65535 之间的整数），请重新输入。"
-            continue
-        fi
         break
     done
 
@@ -1120,13 +1116,6 @@ EOF
         local username="$2"
         local node_hostname="$3"
         local console_addr="$4"
-        # 若端口为 0，去掉 :0 后缀（交由协议默认端口）
-        local console_url
-        if [[ "$console_addr" == *:0 ]]; then
-            console_url="${console_addr%:0}"
-        else
-            console_url="$console_addr"
-        fi
         cat <<EOF
 [Unit]
 Description=EasyTier Service
@@ -1135,7 +1124,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/easytier-core -w "${console_url}/${username}" --hostname "${node_hostname}"
+ExecStart=${INSTALL_DIR}/easytier-core -w "${console_addr}/${username}" --hostname "${node_hostname}"
 Restart=always
 RestartSec=5
 LimitNOFILE=1048576
