@@ -12,7 +12,7 @@ readonly INSTALL_DIR="/root/easytier"
 readonly SERVICE_FILE="/etc/systemd/system/easytier.service"
 readonly SERVICE_NAME="easytier"
 readonly CONFIG_FILE="/etc/easytier/easytier.yaml"
-readonly DEFAULT_CONSOLE_HOST="udp://cfgs.175419.xyz:22022"
+readonly DEFAULT_CONSOLE_HOST="udp://cfgs.175419.xyz:22020"
 readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
 
 # 服务运行模式
@@ -419,7 +419,7 @@ prompt_console() {
 
     # 预定义选项
     local -a OPTIONS
-    OPTIONS[1]="udp://cfgs.175419.xyz:22022"
+    OPTIONS[1]="udp://cfgs.175419.xyz:22020"
     OPTIONS[2]="wss://etcfgs.38196962.xyz:0"
     OPTIONS[3]=""
 
@@ -435,7 +435,7 @@ prompt_console() {
 
     while true; do
         echo -e "\n${BOLD}── 选择控制台地址 ──${RESET}" >&2
-        echo -e "  ${CYAN}1${RESET}) udp://cfgs.175419.xyz:22022" >&2
+        echo -e "  ${CYAN}1${RESET}) udp://cfgs.175419.xyz:22020" >&2
         echo -e "  ${CYAN}2${RESET}) wss://etcfgs.38196962.xyz:0" >&2
         echo -e "  ${CYAN}3${RESET}) 手动填写" >&2
         [ -n "$cur_console" ] && echo -e "\n  当前配置: ${CYAN}${cur_console}${RESET}" >&2
