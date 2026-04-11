@@ -1423,7 +1423,7 @@ download_and_extract() {
 }
 
 # ----------------------------------------------------------------
-# 下载并安装 easytier-web-embed
+# 下载 easytier-web-embed（从与 easytier-core 相同的 zip 包中提取）
 # ----------------------------------------------------------------
 download_web_embed() {
     local version="$1"
@@ -1431,48 +1431,32 @@ download_web_embed() {
     local arch
     arch=$(get_arch)
 
-    # web-embed 文件名格式: easytier-web-embed-{arch}
-    local binary_name="easytier-web-embed-${arch}"
-    # 本地镜像路径
-    local mirror_rel_path="${version}/${binary_name}"
-    local github_url="https://github.com/EasyTier/EasyTier/releases/download/${version}/${binary_name}"
+    local base_name="easytier-linux-${arch}"
+    local zip_name="${base_name}-${version}.zip"
+    local rel_path="${version}/${zip_name}"
+    local github_url="https://github.com/EasyTier/EasyTier/releases/download/${rel_path}"
+    local web_embed_in_zip="${base_name}/easytier-web-embed-${arch}"
 
     title "下载 EasyTier Web 控制台 (${arch})"
 
     if [ "$download_method" = "local" ]; then
-        info "从本地镜像下载: ${LOCAL_MIRROR}/${mirror_rel_path}"
-        if wget -q --timeout=15 -O "$WEB_EMBED_BINARY" "${LOCAL_MIRROR}/${mirror_rel_path}" 2>/dev/null; then
-            info "本地镜像下载成功。"
-        else
-            error "本地镜像下载失败，请检查网络或服务器状态。"
-            return 1
-        fi
+        download_from_local "$rel_path" "$TMP_ZIP"
     elif [ "$download_method" = "proxy" ]; then
-        local downloaded=false
-        for proxy in "${PROXY_LIST[@]}"; do
-            info "尝试代理: ${proxy}"
-            if wget -q --timeout=15 -O "$WEB_EMBED_BINARY" "${proxy}${github_url}" 2>/dev/null; then
-                info "代理下载成功: ${proxy}"
-                downloaded=true
-                break
-            fi
-            warn "代理 ${proxy} 失败，尝试下一个..."
-        done
-        if [ "$downloaded" = false ]; then
-            error "所有代理均失败，请检查网络或改用本地镜像下载。"
-            return 1
-        fi
+        download_from_proxy "$github_url" "$TMP_ZIP"
     else
-        info "直接从 GitHub 下载: ${github_url}"
-        if ! wget -q --timeout=15 -O "$WEB_EMBED_BINARY" "$github_url" 2>/dev/null; then
-            error "GitHub 直接下载失败，请确认网络可直连 github.com，或改用其他下载方式。"
-            return 1
-        fi
-        info "GitHub 直接下载成功。"
+        download_from_github_direct "$github_url" "$TMP_ZIP"
     fi
 
-    chmod +x "$WEB_EMBED_BINARY"
-    info "Web 控制台程序已安装: ${WEB_EMBED_BINARY}"
+    # 从 zip 中只提取 web-embed 二进制文件
+    title "提取 Web 控制台程序"
+    if unzip -o "$TMP_ZIP" "$web_embed_in_zip" -d "$INSTALL_DIR/" >&2; then
+        mv "${INSTALL_DIR}/${web_embed_in_zip}" "$WEB_EMBED_BINARY"
+        chmod +x "$WEB_EMBED_BINARY"
+        info "Web 控制台程序已安装: ${WEB_EMBED_BINARY}"
+    else
+        error "无法从 zip 包中提取 easytier-web-embed，请确认该版本包含 Web 控制台组件。"
+        return 1
+    fi
 }
 
 # ----------------------------------------------------------------
