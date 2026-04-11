@@ -305,15 +305,22 @@ show_current_info() {
         echo -e "  程序版本: ${CYAN}${ver}${RESET}"
     fi
 
+    echo -e "${BOLD}${CYAN}──────────────────────────────────${RESET}"
+
+    # ── Web 控制台状态 ──
     if systemctl is-active "$WEB_SERVICE_NAME" &>/dev/null; then
-        echo -e "  Web服务:  ${GREEN}${BOLD}运行中 ✓${RESET}"
+        echo -e "${BOLD}────────── Web 控制台状态 ──────────${RESET}"
+        echo -e "  服务状态: ${GREEN}${BOLD}运行中 ✓${RESET}"
         read_web_console_info
+        echo -e "${BOLD}${CYAN}──────────────────────────────────${RESET}"
     elif [ -f "$WEB_SERVICE_FILE" ]; then
-        echo -e "  Web服务:  ${RED}${BOLD}已停止 ✗${RESET}"
+        echo -e "${BOLD}────────── Web 控制台状态 ──────────${RESET}"
+        echo -e "  服务状态: ${RED}${BOLD}已停止 ✗${RESET}"
         read_web_console_info
+        echo -e "${BOLD}${CYAN}──────────────────────────────────${RESET}"
     fi
 
-    echo -e "${BOLD}${CYAN}──────────────────────────────────${RESET}\n"
+    echo
 }
 
 # ----------------------------------------------------------------
@@ -1703,10 +1710,11 @@ show_status() {
 
     # 如果 easytier-web 服务也在运行，显示其信息
     if systemctl is-active "$WEB_SERVICE_NAME" &>/dev/null; then
-        echo >&2
-        echo -e "${BOLD}──────── EasyTier Web 控制台 ────────${RESET}" >&2
+        echo -e "\n${BOLD}${CYAN}──────────────────────────────────${RESET}" >&2
+        echo -e "${BOLD}────────── Web 控制台状态 ──────────${RESET}" >&2
+        echo -e "  服务状态: ${GREEN}${BOLD}运行中 ✓${RESET}" >&2
         read_web_console_info >&2
-        echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
+        echo -e "${BOLD}${CYAN}──────────────────────────────────${RESET}\n" >&2
     fi
 }
 
