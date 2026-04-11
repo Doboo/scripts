@@ -1435,7 +1435,7 @@ download_web_embed() {
     local zip_name="${base_name}-${version}.zip"
     local rel_path="${version}/${zip_name}"
     local github_url="https://github.com/EasyTier/EasyTier/releases/download/${rel_path}"
-    local web_embed_in_zip="${base_name}/easytier-web-embed-${arch}"
+    local web_embed_in_zip="${base_name}/easytier-web-embed"
 
     title "下载 EasyTier Web 控制台 (${arch})"
 
