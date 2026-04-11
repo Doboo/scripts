@@ -15,6 +15,15 @@ readonly CONFIG_FILE="/etc/easytier/easytier.yaml"
 readonly DEFAULT_CONSOLE_HOST="udp://cfgs.175419.xyz:22020"
 readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
 
+# Web 控制台相关常量
+readonly WEB_EMBED_BINARY="${INSTALL_DIR}/easytier-web-embed"
+readonly WEB_SERVICE_FILE="/etc/systemd/system/easytier-web.service"
+readonly WEB_SERVICE_NAME="easytier-web"
+readonly WEB_DB_DIR="/etc/easytier"
+readonly DEFAULT_WEB_HTTP_PORT="11211"
+readonly DEFAULT_CONSOLE_PORT="22020"
+readonly DEFAULT_CONSOLE_PROTO="udp"
+
 # 服务运行模式
 # console       : 连接控制台（命令行参数）
 # console_file  : 连接控制台（使用配置文件）
@@ -321,9 +330,10 @@ main_menu() {
         echo -e "  ${BOLD}6)${RESET} 查看运行日志"
         echo -e "  ${BOLD}7)${RESET} 重启服务"
         echo -e "  ${BOLD}8)${RESET} 查看组网信息（peer 列表）"
+        echo -e "  ${BOLD}9)${RESET} 安装 Web 控制台"
         echo -e "  ${BOLD}0)${RESET} 退出"
         echo
-        printf "请输入选项 [0-8]: "
+        printf "请输入选项 [0-9]: "
         read -r choice </dev/tty
 
         case "$choice" in
@@ -335,12 +345,13 @@ main_menu() {
             6) do_show_log ;;
             7) do_restart  ;;
             8) do_show_peer ;;
+            9) do_install_web_console ;;
             0)
                 echo -e "\n${GREEN}再见！${RESET}"
                 exit 0
                 ;;
             *)
-                warn "无效选项 '${choice}'，请输入 0~8。"
+                warn "无效选项 '${choice}'，请输入 0~9。"
                 sleep 1
                 ;;
         esac
@@ -730,6 +741,123 @@ prompt_encryption() {
         esac
     done
 }
+
+# ----------------------------------------------------------------
+# 交互：Web 控制台 - HTTP 端口
+# ----------------------------------------------------------------
+prompt_web_http_port() {
+    local default="${DEFAULT_WEB_HTTP_PORT:-11211}"
+    while true; do
+        printf "请输入 Web 控制台 HTTP 端口 [默认: ${CYAN}%s${RESET}]: " "$default" >&2
+        read -r val </dev/tty
+        val="${val:-$default}"
+        if ! [[ "$val" =~ ^[0-9]+$ ]] || [ "$val" -lt 1 ] || [ "$val" -gt 65535 ]; then
+            warn "端口无效，请输入 1~65535 之间的整数。"
+            continue
+        fi
+        echo "$val"
+        return
+    done
+}
+
+# ----------------------------------------------------------------
+# 交互：Web 控制台 - 控制台通讯端口
+# ----------------------------------------------------------------
+prompt_web_console_port() {
+    local default="${DEFAULT_CONSOLE_PORT:-22020}"
+    while true; do
+        printf "请输入控制台后端通讯端口（客户端连接此端口）[默认: ${CYAN}%s${RESET}]: " "$default" >&2
+        read -r val </dev/tty
+        val="${val:-$default}"
+        if ! [[ "$val" =~ ^[0-9]+$ ]] || [ "$val" -lt 1 ] || [ "$val" -gt 65535 ]; then
+            warn "端口无效，请输入 1~65535 之间的整数。"
+            continue
+        fi
+        echo "$val"
+        return
+    done
+}
+
+# ----------------------------------------------------------------
+# 交互：Web 控制台 - 通讯协议
+# ----------------------------------------------------------------
+prompt_web_console_proto() {
+    local default="${DEFAULT_CONSOLE_PROTO:-udp}"
+    local choice
+    while true; do
+        printf "请选择控制台通讯协议:\n" >&2
+        printf "  ${BOLD}1)${RESET} UDP（推荐，穿透性好）\n" >&2
+        printf "  ${BOLD}2)${RESET} TCP\n" >&2
+        printf "  ${BOLD}3)${RESET} WebSocket\n" >&2
+        printf "请输入选项 [1/2/3]（默认: %s）: " "$default" >&2
+        read -r choice </dev/tty
+
+        case "${choice:-$default}" in
+            1|udp|"") echo "udp"; return ;;
+            2|tcp)   echo "tcp"; return ;;
+            3|ws)    echo "ws";  return ;;
+            *) warn "无效选项，请输入 1、2 或 3。" ;;
+        esac
+    done
+}
+
+# ----------------------------------------------------------------
+# 交互：Web 控制台 - 公网 IP 地址（自动检测 + 手动确认/修改）
+# ----------------------------------------------------------------
+prompt_web_public_ip() {
+    # 尝试自动获取公网 IP
+    local detected_ip=""
+    local methods=(
+        "curl -s --max-time 5 ifconfig.me"
+        "curl -s --max-time 5 ip.sb"
+        "curl -s --max-time 5 ipinfo.io/ip"
+        "wget -qO- --timeout=5 ifconfig.me"
+    )
+
+    for cmd in "${methods[@]}"; do
+        detected_ip=$(eval "$cmd" 2>/dev/null | tr -d '[:space:]')
+        if [[ "$detected_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            break
+        fi
+        detected_ip=""
+    done
+
+    if [ -n "$detected_ip" ]; then
+        echo -e "\n  检测到本机公网 IP: ${GREEN}${BOLD}${detected_ip}${RESET}" >&2
+        printf "是否使用此地址？[${GREEN}Y/n${RESET}]（或直接输入新地址）: " >&2
+        read -r ans </dev/tty
+        ans="${ans:-Y}"
+        if [[ "$ans" =~ ^[Yy]$ ]]; then
+            echo "$detected_ip"
+            return
+        fi
+        # 用户输入了非 Y 的内容，当作手动 IP 继续处理
+        if [ -n "$ans" ] && ! [[ "$ans" =~ ^[Nn]$ ]] && [[ "$ans" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # 用户可能直接输入了IP
+            echo "$ans"
+            return
+        fi
+    else
+        warn "未能自动检测到公网 IP，请手动输入。"
+    fi
+
+    # 手动输入
+    while true; do
+        printf "请输入服务器公网 IP 地址: " >&2
+        read -r val </dev/tty
+        if [ -z "$val" ]; then
+            warn "公网 IP 不能为空。"
+            continue
+        fi
+        if ! [[ "$val" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            warn "IP 格式无效，请重新输入。"
+            continue
+        fi
+        echo "$val"
+        return
+    done
+}
+
 
 # ----------------------------------------------------------------
 # 交互：配置文件模式 - 可选侦听端口（tcp/udp/ws/wss）
@@ -1295,6 +1423,59 @@ download_and_extract() {
 }
 
 # ----------------------------------------------------------------
+# 下载并安装 easytier-web-embed
+# ----------------------------------------------------------------
+download_web_embed() {
+    local version="$1"
+    local download_method="$2"
+    local arch
+    arch=$(get_arch)
+
+    # web-embed 文件名格式: easytier-web-embed-{arch}
+    local binary_name="easytier-web-embed-${arch}"
+    # 本地镜像路径
+    local mirror_rel_path="${version}/${binary_name}"
+    local github_url="https://github.com/EasyTier/EasyTier/releases/download/${version}/${binary_name}"
+
+    title "下载 EasyTier Web 控制台 (${arch})"
+
+    if [ "$download_method" = "local" ]; then
+        info "从本地镜像下载: ${LOCAL_MIRROR}/${mirror_rel_path}"
+        if wget -q --timeout=15 -O "$WEB_EMBED_BINARY" "${LOCAL_MIRROR}/${mirror_rel_path}" 2>/dev/null; then
+            info "本地镜像下载成功。"
+        else
+            error "本地镜像下载失败，请检查网络或服务器状态。"
+            return 1
+        fi
+    elif [ "$download_method" = "proxy" ]; then
+        local downloaded=false
+        for proxy in "${PROXY_LIST[@]}"; do
+            info "尝试代理: ${proxy}"
+            if wget -q --timeout=15 -O "$WEB_EMBED_BINARY" "${proxy}${github_url}" 2>/dev/null; then
+                info "代理下载成功: ${proxy}"
+                downloaded=true
+                break
+            fi
+            warn "代理 ${proxy} 失败，尝试下一个..."
+        done
+        if [ "$downloaded" = false ]; then
+            error "所有代理均失败，请检查网络或改用本地镜像下载。"
+            return 1
+        fi
+    else
+        info "直接从 GitHub 下载: ${github_url}"
+        if ! wget -q --timeout=15 -O "$WEB_EMBED_BINARY" "$github_url" 2>/dev/null; then
+            error "GitHub 直接下载失败，请确认网络可直连 github.com，或改用其他下载方式。"
+            return 1
+        fi
+        info "GitHub 直接下载成功。"
+    fi
+
+    chmod +x "$WEB_EMBED_BINARY"
+    info "Web 控制台程序已安装: ${WEB_EMBED_BINARY}"
+}
+
+# ----------------------------------------------------------------
 # 生成 systemd 服务内容
 # ----------------------------------------------------------------
 generate_service() {
@@ -1383,6 +1564,56 @@ apply_service() {
         info "$line"
     done
     systemctl restart "$SERVICE_NAME" 2>/dev/null
+}
+
+# ----------------------------------------------------------------
+# 生成 Web 控制台 systemd 服务内容
+# ----------------------------------------------------------------
+generate_web_service() {
+    local http_port="$1"
+    local console_port="$2"
+    local console_proto="$3"
+    local public_ip="$4"
+
+    cat <<EOF
+[Unit]
+Description=EasyTier Web Console Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${WEB_EMBED_BINARY} \
+  -d ${WEB_DB_DIR}/et.db \
+  -l ${http_port} \
+  -c ${console_port} \
+  -p ${console_proto} \
+  --api-host http://${public_ip}:${http_port}
+Restart=always
+RestartSec=5
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# ----------------------------------------------------------------
+# 写入 Web 服务文件并启动
+# ----------------------------------------------------------------
+apply_web_service() {
+    local http_port="$1"
+    local console_port="$2"
+    local console_proto="$3"
+    local public_ip="$4"
+
+    generate_web_service "$http_port" "$console_port" "$console_proto" "$public_ip" > "$WEB_SERVICE_FILE"
+    mkdir -p "$WEB_DB_DIR"
+    systemctl daemon-reload
+    systemctl enable "$WEB_SERVICE_NAME" 2>&1 | while IFS= read -r line; do
+        info "$line"
+    done
+    systemctl restart "$WEB_SERVICE_NAME" 2>/dev/null
 }
 
 # ----------------------------------------------------------------
@@ -1665,6 +1896,113 @@ do_install() {
     download_and_extract "$ARCH" "$version" "$download_method"
     apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
     show_status
+}
+
+# ================================================================
+# 操作：安装 Web 控制台
+# ================================================================
+do_install_web_console() {
+    title "安装 EasyTier Web 控制台"
+
+    # 检查二进制文件是否已存在
+    if [ -f "$WEB_EMBED_BINARY" ]; then
+        warn "检测到 ${WEB_EMBED_BINARY} 已存在。"
+        printf "${YELLOW}是否重新下载？[y/N]: ${RESET}" >&2
+        read -r ans </dev/tty
+        [[ "$ans" =~ ^[Yy]$ ]] || {
+            info "跳过下载步骤。"
+            web_binary_exists=true
+        }
+        unset web_binary_exists
+    fi
+
+    # 若需要下载，让用户选择下载方式
+    if [ ! -f "$WEB_EMBED_BINARY" ]; then
+        echo -e "\n${BOLD}── 选择下载方式 ──${RESET}" >&2
+        local download_method dm_label
+        download_method=$(prompt_download_method)
+        case "$download_method" in
+            local)  dm_label="本地镜像" ;;
+            proxy)  dm_label="GitHub 代理" ;;
+            direct) dm_label="GitHub 直连" ;;
+        esac
+
+        # 复用 easytier-core 的版本选择（web-embed 同版本）
+        local version
+        version=$(prompt_version)
+
+        echo -e "\n${BOLD}── 下载并安装 Web 控制台 ──${RESET}" >&2
+        info "下载方式: ${dm_label}"
+        if ! download_web_embed "$version" "$download_method"; then
+            error "Web 控制台下载失败，请检查网络后重试。"
+            return 1
+        fi
+    fi
+
+    # 配置 HTTP 端口
+    echo -e "\n${BOLD}── 配置 HTTP 端口 ──${RESET}" >&2
+    info "Web 控制台前端访问端口（浏览器打开的端口）。"
+    local http_port
+    http_port=$(prompt_web_http_port)
+
+    # 配置控制台后端通讯端口
+    echo -e "\n${BOLD}── 配置控制台后端通讯端口 ──${RESET}" >&2
+    info "控制台后端节点发现/心跳通讯端口（注意：该端口必须与 easytier-core 客户端或服务端所用的 UDP/TCP 端口一致，否则无法通讯）。"
+    local console_port
+    console_port=$(prompt_web_console_port)
+
+    # 配置控制台通讯协议
+    echo -e "\n${BOLD}── 配置控制台通讯协议 ──${RESET}" >&2
+    info "控制台后端通讯使用的协议类型。"
+    local console_proto
+    console_proto=$(prompt_web_console_proto)
+
+    # 自动获取或确认公网 IP
+    echo -e "\n${BOLD}── 配置公网 IP ──${RESET}" >&2
+    local public_ip
+    public_ip=$(prompt_web_public_ip)
+
+    # 安装确认
+    echo -e "\n${BOLD}${CYAN}──────── 安装确认 ────────${RESET}"
+    echo -e "  程序路径:  ${CYAN}${WEB_EMBED_BINARY}${RESET}"
+    echo -e "  数据库目录: ${CYAN}${WEB_DB_DIR}/${RESET}"
+    echo -e "  HTTP 端口: ${CYAN}${http_port}${RESET}"
+    echo -e "  后端端口:  ${CYAN}${console_port}${RESET}"
+    echo -e "  通讯协议:  ${CYAN}${console_proto}${RESET}"
+    echo -e "  公网 IP:   ${CYAN}${public_ip}${RESET}"
+    echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+    printf "${YELLOW}确认安装？[Y/n]: ${RESET}" >&2
+    read -r ans </dev/tty
+    ans="${ans:-Y}"
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消安装。"; return 0; }
+
+    # 生成服务文件并启动
+    info "正在配置 systemd 服务..."
+    apply_web_service "$http_port" "$console_port" "$console_proto" "$public_ip"
+
+    # 检查服务是否启动成功
+    sleep 2
+    if systemctl is-active --quiet "$WEB_SERVICE_NAME"; then
+        success "Web 控制台已启动！\n"
+    else
+        error "Web 控制台启动失败，请检查日志：journalctl -u ${WEB_SERVICE_NAME} -n 20"
+        return 1
+    fi
+
+    echo -e "${BOLD}──────────────────────────────────────────${RESET}"
+    echo -e "${BOLD}  🎉 EasyTier Web 控制台安装完成！${RESET}"
+    echo -e "${BOLD}──────────────────────────────────────────${RESET}\n"
+    echo -e "  ${GREEN}Web 访问地址:  http://${public_ip}:${http_port}${RESET}"
+    echo -e "  ${GREEN}后端通讯地址:  ${console_proto}://${public_ip}:${console_port}${RESET}"
+    echo -e "  ${GREEN}数据库路径:   ${WEB_DB_DIR}/et.db${RESET}\n"
+    echo -e "  ${YELLOW}⚠  重要提醒：请定期备份数据库文件！${RESET}"
+    echo -e "  ${YELLOW}   备份路径: ${WEB_DB_DIR}/  （包含 et.db 等文件）${RESET}\n"
+    echo -e "  ${CYAN}常用命令：${RESET}"
+    echo -e "    查看状态:  systemctl status ${WEB_SERVICE_NAME}"
+    echo -e "    查看日志:  journalctl -u ${WEB_SERVICE_NAME} -f"
+    echo -e "    停止服务:  systemctl stop ${WEB_SERVICE_NAME}"
+    echo -e "    重启服务:  systemctl restart ${WEB_SERVICE_NAME}\n"
+    echo -e "${BOLD}──────────────────────────────────────────${RESET}"
 }
 
 # ================================================================
