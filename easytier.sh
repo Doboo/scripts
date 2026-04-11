@@ -1735,6 +1735,34 @@ watch_logs() {
 
 # ================================================================
 # 操作：全新安装
+# ----------------------------------------------------------------
+# 已有程序文件时，提示用户选择下一步操作
+# 检测目录：INSTALL_DIR 下的 easytier-core 和 easytier-web-embed
+# 返回值：
+#   use       → 使用已有文件，跳过下载
+#   download  → 重新下载
+#   cancel     → 取消安装
+# ----------------------------------------------------------------
+prompt_existing_binary_choice() {
+    echo -e "
+${YELLOW}⚠  检测到安装目录 ${CYAN}${INSTALL_DIR}${YELLOW} 中已有程序文件。${RESET}"
+    echo -e "${YELLOW}   全新安装将会覆盖现有程序。${RESET}
+"
+    echo -e "${BOLD}请选择：${RESET}"
+    echo -e "  ${CYAN}1)${RESET} 使用已有程序文件（跳过下载，推荐）"
+    echo -e "  ${CYAN}2)${RESET} 重新下载并覆盖"
+    echo -e "  ${CYAN}3)${RESET} 取消安装
+"
+    printf "${YELLOW}请输入选项 [1/2/3]（默认: 1）: ${RESET}" >&2
+    local ans
+    read -r ans </dev/tty
+    case "${ans:-1}" in
+        1) echo "use" ;;
+        2) echo "download" ;;
+        *) echo "cancel" ;;
+    esac
+}
+
 # ================================================================
 do_install() {
     local mode="${1:-}"
@@ -1743,25 +1771,30 @@ do_install() {
     if [ "$mode" = "$MODE_RELAY" ]; then
         title "EasyTier 服务端/中继模式安装"
 
-        if [ -f "$SERVICE_FILE" ] || [ -f "${INSTALL_DIR}/easytier-core" ]; then
-            warn "检测到已有安装！全新安装将会覆盖现有程序和服务。"
-            printf "${YELLOW}确认继续？[y/N]: ${RESET}" >&2
-            read -r ans </dev/tty
-            [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消安装。"; return 0; }
+        local choice="download"
+        if [ -f "${INSTALL_DIR}/easytier-core" ]; then
+            choice=$(prompt_existing_binary_choice)
+            [[ "$choice" = "cancel" ]] && { info "已取消安装。"; return 0; }
         fi
 
-        echo -e "\n${BOLD}── 第 1 步：选择版本 ──${RESET}" >&2
-        local version
-        version=$(prompt_version)
+        local version dm_label
+        if [[ "$choice" = "download" ]]; then
+            echo -e "\n${BOLD}── 第 1 步：选择版本 ──${RESET}" >&2
+            version=$(prompt_version)
 
-        echo -e "\n${BOLD}── 第 2 步：选择下载方式 ──${RESET}" >&2
-        local download_method dm_label
-        download_method=$(prompt_download_method)
-        case "$download_method" in
-            local)  dm_label="本地镜像" ;;
-            proxy)  dm_label="GitHub 代理" ;;
-            direct) dm_label="GitHub 直连" ;;
-        esac
+            echo -e "\n${BOLD}── 第 2 步：选择下载方式 ──${RESET}" >&2
+            local download_method
+            download_method=$(prompt_download_method)
+            case "$download_method" in
+                local)  dm_label="本地镜像" ;;
+                proxy)  dm_label="GitHub 代理" ;;
+                direct) dm_label="GitHub 直连" ;;
+            esac
+        else
+            # use existing：读取已有文件的版本信息展示
+            version=$("${INSTALL_DIR}/easytier-core" --version 2>/dev/null | head -1 || echo "未知")
+            dm_label="（使用已有程序）"
+        fi
 
         echo -e "\n${BOLD}── 第 3 步：配置服务端信息 ──${RESET}" >&2
         info "主机名将显示在 EasyTier 网络拓扑中，默认使用本机系统名。"
@@ -1790,8 +1823,10 @@ do_install() {
         [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消安装。"; return 0; }
 
         info "模式: 服务端/中继 | 版本: $version | 架构: $ARCH | 下载方式: ${dm_label}"
-        [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
-        download_and_extract "$ARCH" "$version" "$download_method"
+        if [[ "$choice" = "download" ]]; then
+            [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
+            download_and_extract "$ARCH" "$version" "$download_method"
+        fi
         apply_service "$MODE_RELAY" "$relay_hostname" "$tcp_port" "$udp_port" "$ws_port" "$wss_port"
         show_status
         return
@@ -1800,11 +1835,10 @@ do_install() {
     # 客户端模式（连接控制台）
     title "EasyTier 客户端模式安装"
 
-    if [ -f "$SERVICE_FILE" ] || [ -f "${INSTALL_DIR}/easytier-core" ]; then
-        warn "检测到已有安装！全新安装将会覆盖现有程序和服务。"
-        printf "${YELLOW}确认继续？[y/N]: ${RESET}" >&2
-        read -r ans </dev/tty
-        [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消安装。"; return 0; }
+    local choice="download"
+    if [ -f "${INSTALL_DIR}/easytier-core" ]; then
+        choice=$(prompt_existing_binary_choice)
+        [[ "$choice" = "cancel" ]] && { info "已取消安装。"; return 0; }
     fi
 
     echo -e "\n${BOLD}── 第 1 步：选择安装方式 ──${RESET}" >&2
@@ -1823,17 +1857,22 @@ do_install() {
     done
 
     echo -e "\n${BOLD}── 第 2 步：选择版本 ──${RESET}" >&2
-    local version
-    version=$(prompt_version)
+    local version dm_label
+    if [[ "$choice" = "download" ]]; then
+        version=$(prompt_version)
 
-    echo -e "\n${BOLD}── 第 3 步：选择下载方式 ──${RESET}" >&2
-    local download_method dm_label
-    download_method=$(prompt_download_method)
-    case "$download_method" in
-        local)  dm_label="本地镜像" ;;
-        proxy)  dm_label="GitHub 代理" ;;
-        direct) dm_label="GitHub 直连" ;;
-    esac
+        echo -e "\n${BOLD}── 第 3 步：选择下载方式 ──${RESET}" >&2
+        local download_method
+        download_method=$(prompt_download_method)
+        case "$download_method" in
+            local)  dm_label="本地镜像" ;;
+            proxy)  dm_label="GitHub 代理" ;;
+            direct) dm_label="GitHub 直连" ;;
+        esac
+    else
+        version=$("${INSTALL_DIR}/easytier-core" --version 2>/dev/null | head -1 || echo "未知")
+        dm_label="（使用已有程序）"
+    fi
 
     # ── 方式 2：配置文件模式 ──
     if [ "$install_method" = "2" ]; then
@@ -1890,8 +1929,10 @@ do_install() {
         [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消安装。"; return 0; }
 
         info "版本: $version | 架构: $ARCH | 下载方式: ${dm_label}"
-        [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
-        download_and_extract "$ARCH" "$version" "$download_method"
+        if [[ "$choice" = "download" ]]; then
+            [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
+            download_and_extract "$ARCH" "$version" "$download_method"
+        fi
         write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" "$cfg_ip_mode" "$cfg_peer" "$cfg_proxy" "$cfg_enc" "$cfg_listen"
         apply_service "$MODE_CONSOLE_FILE"
         show_status
@@ -1926,8 +1967,10 @@ do_install() {
     [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消安装。"; return 0; }
 
     info "版本: $version | 架构: $ARCH | 下载方式: ${dm_label}"
-    [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
-    download_and_extract "$ARCH" "$version" "$download_method"
+    if [[ "$choice" = "download" ]]; then
+        [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
+        download_and_extract "$ARCH" "$version" "$download_method"
+    fi
     apply_service "$MODE_CONSOLE" "$username" "$node_hostname" "$console_addr"
     show_status
 }
@@ -1938,22 +1981,30 @@ do_install() {
 do_install_web_console() {
     title "安装 EasyTier Web 控制台"
 
-    # 检查二进制文件是否已存在
+    # 检查二进制文件是否已存在，存在则让用户选择
+    local choice="download"
     if [ -f "$WEB_EMBED_BINARY" ]; then
-        warn "检测到 ${WEB_EMBED_BINARY} 已存在。"
-        printf "${YELLOW}是否重新下载？[y/N]: ${RESET}" >&2
+        echo -e "\n${YELLOW}⚠  检测到已有 Web 控制台程序：${CYAN}${WEB_EMBED_BINARY}${YELLOW}${RESET}"
+        echo -e "${YELLOW}   全新安装将会覆盖现有程序。${RESET}\n"
+        echo -e "${BOLD}请选择：${RESET}"
+        echo -e "  ${CYAN}1)${RESET} 使用已有程序（跳过下载，推荐）"
+        echo -e "  ${CYAN}2)${RESET} 重新下载并覆盖"
+        echo -e "  ${CYAN}3)${RESET} 取消安装\n"
+        printf "${YELLOW}请输入选项 [1/2/3]（默认: 1）: ${RESET}" >&2
+        local ans
         read -r ans </dev/tty
-        [[ "$ans" =~ ^[Yy]$ ]] || {
-            info "跳过下载步骤。"
-            web_binary_exists=true
-        }
-        unset web_binary_exists
+        case "${ans:-1}" in
+            1) choice="use" ;;
+            2) choice="download" ;;
+            *) info "已取消安装。"; return 0 ;;
+        esac
     fi
 
-    # 若需要下载，让用户选择下载方式
-    if [ ! -f "$WEB_EMBED_BINARY" ]; then
+    # 若需要下载，让用户选择下载方式和版本
+    local version dm_label
+    if [[ "$choice" = "download" ]]; then
         echo -e "\n${BOLD}── 选择下载方式 ──${RESET}" >&2
-        local download_method dm_label
+        local download_method
         download_method=$(prompt_download_method)
         case "$download_method" in
             local)  dm_label="本地镜像" ;;
@@ -1961,8 +2012,6 @@ do_install_web_console() {
             direct) dm_label="GitHub 直连" ;;
         esac
 
-        # 复用 easytier-core 的版本选择（web-embed 同版本）
-        local version
         version=$(prompt_version)
 
         echo -e "\n${BOLD}── 下载并安装 Web 控制台 ──${RESET}" >&2
@@ -1971,6 +2020,11 @@ do_install_web_console() {
             error "Web 控制台下载失败，请检查网络后重试。"
             return 1
         fi
+    else
+        # use existing：读取已有文件的版本信息
+        version=$("$WEB_EMBED_BINARY" --version 2>/dev/null | head -1 || echo "未知")
+        dm_label="（使用已有程序）"
+        info "将使用已有程序，跳过下载。"
     fi
 
     # 配置 HTTP 端口
