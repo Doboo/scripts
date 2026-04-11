@@ -304,7 +304,41 @@ show_current_info() {
         ver=$("${INSTALL_DIR}/easytier-core" --version 2>/dev/null | head -1 || echo "未知")
         echo -e "  程序版本: ${CYAN}${ver}${RESET}"
     fi
+
+    if systemctl is-active "$WEB_SERVICE_NAME" &>/dev/null; then
+        echo -e "  Web服务:  ${GREEN}${BOLD}运行中 ✓${RESET}"
+        read_web_console_info
+    elif [ -f "$WEB_SERVICE_FILE" ]; then
+        echo -e "  Web服务:  ${RED}${BOLD}已停止 ✗${RESET}"
+        read_web_console_info
+    fi
+
     echo -e "${BOLD}${CYAN}──────────────────────────────────${RESET}\n"
+}
+
+# ----------------------------------------------------------------
+# 从 easytier-web systemd 服务文件读取配置参数
+# ----------------------------------------------------------------
+read_web_console_info() {
+    if [ ! -f "$WEB_SERVICE_FILE" ]; then
+        return 1
+    fi
+    local exec_line
+    exec_line=$(grep "^ExecStart=" "$WEB_SERVICE_FILE" 2>/dev/null || true)
+    [ -z "$exec_line" ] && return 1
+
+    # 提取各参数
+    local http_port console_port console_proto api_host
+    http_port=$(echo "$exec_line" | grep -oE '\-l[[:space:]]+([0-9]+)' | awk '{print $2}' | head -1)
+    console_port=$(echo "$exec_line" | grep -oE '\-c[[:space:]]+([0-9]+)' | awk '{print $2}' | head -1)
+    console_proto=$(echo "$exec_line" | grep -oE '\-p[[:space:]]+(tcp|udp|ws)[^[:space:]]*' | awk '{print $2}' | head -1)
+    api_host=$(echo "$exec_line" | sed -n 's/.*--api-host[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -1)
+
+    [ -n "$http_port"    ] && echo "  HTTP 端口:  ${CYAN}${http_port}${RESET}"
+    [ -n "$console_port" ] && echo -e "  后端端口:  ${CYAN}${console_port} (${console_proto})${RESET}"
+    [ -n "$api_host"    ] && echo -e "  API 地址:  ${CYAN}${api_host}${RESET}"
+    echo -e "  数据库:    ${CYAN}${WEB_DB_DIR}/et.db${RESET}"
+    return 0
 }
 
 # ================================================================
@@ -1666,6 +1700,14 @@ show_status() {
     success "EasyTier 已成功连接并启动。"
     info "如需持续监控日志，运行:"
     echo "    journalctl -f -u ${SERVICE_NAME}.service" >&2
+
+    # 如果 easytier-web 服务也在运行，显示其信息
+    if systemctl is-active "$WEB_SERVICE_NAME" &>/dev/null; then
+        echo >&2
+        echo -e "${BOLD}──────── EasyTier Web 控制台 ────────${RESET}" >&2
+        read_web_console_info >&2
+        echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
+    fi
 }
 
 # ----------------------------------------------------------------
