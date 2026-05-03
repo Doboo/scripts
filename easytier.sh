@@ -92,14 +92,13 @@ install_deps() {
 
     info "检测到缺少依赖: ${missing[*]}，正在安装..."
     if [ -f /etc/debian_version ]; then
-        apt-get update -y -qq && apt-get install -y -qq "${missing[@]}"
+        apt-get update -y -qq && apt-get install -y -qq "${missing[@]}" || true
     elif [ -f /etc/redhat-release ]; then
-        yum install -y -q "${missing[@]}"
+        yum install -y -q "${missing[@]}" || true
     elif [ -f /etc/alpine-release ]; then
-        apk add --quiet "${missing[@]}"
+        apk add --quiet "${missing[@]}" || true
     else
         error "无法自动安装依赖，请手动安装: ${missing[*]}"
-        exit 1
     fi
     info "依赖安装完成。"
 }
@@ -108,7 +107,7 @@ install_deps() {
 # 获取 CPU 架构
 # ----------------------------------------------------------------
 get_arch() {
-    case $(uname -m) in
+    case "$(uname -m)" in
         x86_64)  echo "x86_64"  ;;
         aarch64) echo "aarch64" ;;
         armv7l)  echo "armv7"   ;;
@@ -182,42 +181,42 @@ _read_yaml_val() {
 
 # 读取 config 模式 hostname
 read_current_conf_hostname() {
-    _read_yaml_val "hostname" | head -1
+    _read_yaml_val "hostname" | head -1 || true
 }
 
 # 读取网络名称
 read_current_network_name() {
-    _read_yaml_val "network_name" | head -1
+    _read_yaml_val "network_name" | head -1 || true
 }
 
 # 读取网络密钥
 read_current_network_secret() {
-    _read_yaml_val "network_secret" | head -1
+    _read_yaml_val "network_secret" | head -1 || true
 }
 
 # 读取本机虚拟 IP
 read_current_conf_ipv4() {
-    _read_yaml_val "ipv4" | head -1
+    _read_yaml_val "ipv4" | head -1 || true
 }
 
 # 读取是否 dhcp
 read_current_conf_dhcp() {
-    _read_yaml_val "dhcp" | head -1
+    _read_yaml_val "dhcp" | head -1 || true
 }
 
 # 读取 peer URI
 read_current_conf_peer_uri() {
-    grep -E '^\[\[peer\]\]' "$CONFIG_FILE" -A 1 2>/dev/null | grep "^uri\s*=" | sed 's/^uri\s*=\s*//' | tr -d '"' | tr -d "'" | xargs | awk '{print $1}'
+    grep -E '^\[\[peer\]\]' "$CONFIG_FILE" -A 1 2>/dev/null | grep "^uri\s*=" | sed 's/^uri\s*=\s*//' | tr -d '"' | tr -d "'" | xargs | awk '{print $1}' || true
 }
 
 # 读取子网代理 CIDR
 read_current_conf_proxy_cidr() {
-    grep -E '^\[\[proxy_network\]\]' "$CONFIG_FILE" -A 1 2>/dev/null | grep "^cidr\s*=" | sed 's/^cidr\s*=\s*//' | tr -d '"' | tr -d "'" | xargs | awk '{print $1}'
+    grep -E '^\[\[proxy_network\]\]' "$CONFIG_FILE" -A 1 2>/dev/null | grep "^cidr\s*=" | sed 's/^cidr\s*=\s*//' | tr -d '"' | tr -d "'" | xargs | awk '{print $1}' || true
 }
 
 # 读取加密开关
 read_current_conf_encryption() {
-    _read_yaml_val "enable_encryption" | head -1
+    _read_yaml_val "enable_encryption" | head -1 || true
 }
 
 # ----------------------------------------------------------------
@@ -328,22 +327,22 @@ show_current_info() {
 # ----------------------------------------------------------------
 read_web_console_info() {
     if [ ! -f "$WEB_SERVICE_FILE" ]; then
-        return 1
+        return 0
     fi
     local exec_line
     exec_line=$(grep "^ExecStart=" "$WEB_SERVICE_FILE" 2>/dev/null || true)
-    [ -z "$exec_line" ] && return 1
+    [ -z "$exec_line" ] && return 0
 
-    # 提取各参数
+    # 提取各参数（grep 无匹配时返回1，用 || true 防止 set -e 退出）
     local http_port console_port console_proto api_host
-    http_port=$(echo "$exec_line" | grep -oE '\-l[[:space:]]+([0-9]+)' | awk '{print $2}' | head -1)
-    console_port=$(echo "$exec_line" | grep -oE '\-c[[:space:]]+([0-9]+)' | awk '{print $2}' | head -1)
-    console_proto=$(echo "$exec_line" | grep -oE '\-p[[:space:]]+(tcp|udp|ws)[^[:space:]]*' | awk '{print $2}' | head -1)
-    api_host=$(echo "$exec_line" | sed -n 's/.*--api-host[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -1)
+    http_port=$(echo "$exec_line" | grep -oE '\-l[[:space:]]+([0-9]+)'  2>/dev/null | awk '{print $2}' | head -1 || true)
+    console_port=$(echo "$exec_line" | grep -oE '\-c[[:space:]]+([0-9]+)' 2>/dev/null | awk '{print $2}' | head -1 || true)
+    console_proto=$(echo "$exec_line" | grep -oE '\-p[[:space:]]+(tcp|udp|ws)[^[:space:]]*' 2>/dev/null | awk '{print $2}' | head -1 || true)
+    api_host=$(echo "$exec_line" | sed -n 's/.*--api-host[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -1 || true)
 
     [ -n "$http_port"    ] && echo "  HTTP 端口:  ${CYAN}${http_port}${RESET}"
     [ -n "$console_port" ] && echo -e "  后端端口:  ${CYAN}${console_port} (${console_proto})${RESET}"
-    [ -n "$api_host"    ] && echo -e "  API 地址:  ${CYAN}${api_host}${RESET}"
+    [ -n "$api_host"     ] && echo -e "  API 地址:  ${CYAN}${api_host}${RESET}"
     echo -e "  数据库:    ${CYAN}${WEB_DB_DIR}/et.db${RESET}"
     return 0
 }
@@ -353,7 +352,7 @@ read_web_console_info() {
 # ================================================================
 main_menu() {
     while true; do
-        clear
+    clear || true
         echo -e "${BOLD}${BLUE}"
         echo "  ╔══════════════════════════════════════╗"
         echo "  ║       EasyTier 一键管理脚本          ║"
@@ -2219,7 +2218,7 @@ do_modify() {
                 cur_cfg_peer=$(read_current_conf_peer_uri)
                 cur_cfg_proxy_cidr=$(read_current_conf_proxy_cidr)
                 cur_cfg_enc=$(read_current_conf_encryption)
-                cur_cfg_listen=$(_read_yaml_val "listeners" | grep -oP '://[^"]+' | sed 's|//0.0.0.0:||' | while read -r p; do echo "$p"; done | tr '\n' '|' | sed 's/|$//')
+                cur_cfg_listen=$(_read_yaml_val "listeners" | grep -oP '://[^"]+' | sed 's|//0.0.0.0:||' | while read -r p; do echo "$p"; done | tr '\n' '|' | sed 's/|$//') || true
 
                 write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" \
                     "${cur_cfg_ip:-automatic}" "${cur_cfg_peer:-}" "${cur_cfg_proxy_cidr:-false}" "$cur_cfg_enc" "${cur_cfg_listen:-}"
