@@ -13,7 +13,7 @@ readonly SERVICE_FILE="/etc/systemd/system/easytier.service"
 readonly SERVICE_NAME="easytier"
 readonly CONFIG_FILE="/etc/easytier/easytier.yaml"
 readonly DEFAULT_CONSOLE_HOST="udp://cfgs.175419.xyz:22020"
-readonly LOCAL_MIRROR="http://47.98.36.99:8888/chfs/shared/easytier"
+readonly LOCAL_MIRROR="http://202.189.23.82:1880/chfs/shared/easytier"
 
 # Web 控制台相关常量
 readonly WEB_EMBED_BINARY="${INSTALL_DIR}/easytier-web-embed"
