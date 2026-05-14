@@ -1305,16 +1305,16 @@ prompt_version() {
 
     while true; do
         printf "\n请选择要安装的 EasyTier 版本:\n" >&2
-        printf "  ${BOLD}1)${RESET} v2.4.5（稳定版，默认）\n" >&2
-        printf "  ${BOLD}2)${RESET} v2.6.3（最新版）\n" >&2
+        printf "  ${BOLD}1)${RESET} v2.6.4（最新版，默认）\n" >&2
+        printf "  ${BOLD}2)${RESET} v2.4.5（稳定版）\n" >&2
         printf "  ${BOLD}3)${RESET} 手动输入版本号\n" >&2
         printf "请输入选项 [1/2/3]（默认: 1）: " >&2
         read -r choice </dev/tty
         choice="${choice:-1}"
 
         case "$choice" in
-            1) ver="v2.4.5"; break ;;
-            2) ver="v2.6.3"; break ;;
+            1) ver="v2.6.4"; break ;;
+            2) ver="v2.4.5"; break ;;
             3)
                 while true; do
                     printf "请输入版本号（不带 v，例如 2.5.1）: " >&2
