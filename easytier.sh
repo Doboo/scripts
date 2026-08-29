@@ -25,12 +25,22 @@ readonly DEFAULT_CONSOLE_PORT="22020"
 readonly DEFAULT_CONSOLE_PROTO="udp"
 
 # 服务运行模式
-# console       : 连接控制台（命令行参数）
-# console_file  : 连接控制台（使用配置文件）
-# relay         : 不连接控制台，以服务端/中继模式运行
+# console       : 配置服务器模式（命令行参数，使用 -w/--config-server）
+# console_file  : 本地配置文件模式（使用 -c）
+# relay         : 不连接配置服务器，以服务端/中继模式运行
 readonly MODE_CONSOLE="console"
 readonly MODE_CONSOLE_FILE="console_file"
 readonly MODE_RELAY="relay"
+
+# systemd 服务的日志级别
+# info 适合新装排障，长期运行觉得日志吵可改成 warn
+readonly RUST_LOG_LEVEL="info"
+
+# 内存护栏上限：MemoryMax 取物理内存 1/4，并限制在 128M~1024M 之间
+readonly MEM_LIMIT_MIN_MB=128
+readonly MEM_LIMIT_MAX_MB=1024
+readonly MEM_LIMIT_RATIO=4      # 物理内存除以该值得到 MemoryMax
+readonly MEM_HIGH_PERCENT=60    # MemoryHigh = MemoryMax 的百分之多少
 
 readonly PROXY_LIST=(
     "https://ghfast.top/"
@@ -241,6 +251,17 @@ read_current_relay_port() {
     fi
     # 匹配 --listeners "tcp://0.0.0.0:11010" 这样的格式
     grep -oP "(?<=${proto}://0\\.0\\.0\\.0:)[0-9]+" "$SERVICE_FILE" 2>/dev/null | head -1 || echo ""
+}
+
+# ----------------------------------------------------------------
+# 读取当前中继网络白名单
+# ----------------------------------------------------------------
+read_current_relay_whitelist() {
+    if [ ! -f "$SERVICE_FILE" ]; then
+        echo ""
+        return
+    fi
+    grep -oP '(?<=--relay-network-whitelist ")[^"]+' "$SERVICE_FILE" 2>/dev/null | head -1 || echo ""
 }
 
 # ----------------------------------------------------------------
@@ -1171,6 +1192,9 @@ _do_switch_to_relay_mode() {
     ports_str=$(prompt_listen_ports)
     read -r tcp_port udp_port ws_port wss_port <<< "$ports_str"
 
+    local whitelist
+    whitelist=$(prompt_relay_whitelist)
+
     echo -e "\n${BOLD}${CYAN}──────── 切换确认 ────────${RESET}"
     echo -e "  新模式:   ${CYAN}服务端/中继模式${RESET}"
     echo -e "  主机名:   ${CYAN}${relay_hostname}${RESET}"
@@ -1178,6 +1202,7 @@ _do_switch_to_relay_mode() {
     echo -e "  UDP 端口: ${CYAN}${udp_port}${RESET}"
     echo -e "  WS  端口: ${CYAN}${ws_port}${RESET}"
     echo -e "  WSS 端口: ${CYAN}${wss_port}${RESET}"
+    echo -e "  白名单:   ${CYAN}${whitelist}${RESET}"
     echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
     printf "${YELLOW}确认切换并重启服务？（配置文件将保留，不再使用）[Y/n]: ${RESET}" >&2
     read -r ans </dev/tty
@@ -1185,7 +1210,7 @@ _do_switch_to_relay_mode() {
     [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
 
     # 不删除配置文件，保留以备后续切换回来使用
-    apply_service "$MODE_RELAY" "$relay_hostname" "$tcp_port" "$udp_port" "$ws_port" "$wss_port"
+    apply_service "$MODE_RELAY" "$relay_hostname" "$tcp_port" "$udp_port" "$ws_port" "$wss_port" "$whitelist"
     show_status
 }
 
@@ -1295,6 +1320,51 @@ prompt_listen_ports() {
 
     # 以空格分隔输出四个端口，由调用方拆分
     echo "${tcp_port} ${udp_port} ${ws_port} ${wss_port}"
+}
+
+# ----------------------------------------------------------------
+# 交互：服务端模式 - 配置中继网络白名单
+# 白名单决定哪些网络可以经由本节点中继转发
+# ----------------------------------------------------------------
+prompt_relay_whitelist() {
+    local cur_val default val ans
+    cur_val=$(read_current_relay_whitelist)
+    default="${cur_val:-}"
+
+    echo -e "\n${BOLD}── 配置中继网络白名单 ──${RESET}" >&2
+    echo -e "  ${YELLOW}白名单决定哪些网络可经由本节点中继转发。${RESET}" >&2
+    echo -e "  ${YELLOW}填具体网络名（多个用空格分隔）；填 * 表示允许任意网络，${RESET}" >&2
+    echo -e "  ${YELLOW}但公网带宽将被任意第三方使用，请谨慎。${RESET}\n" >&2
+
+    while true; do
+        if [ -n "$default" ]; then
+            printf "允许中继的网络名 [当前: ${CYAN}%s${RESET}，直接回车保留]: " "$default" >&2
+        else
+            printf "允许中继的网络名: " >&2
+        fi
+        read -r val </dev/tty
+        val="${val:-$default}"
+
+        if [ -z "$val" ]; then
+            warn "白名单不能为空。请输入网络名，或输入 * 允许所有网络。"
+            continue
+        fi
+
+        if [ "$val" = "*" ]; then
+            echo "" >&2
+            warn "已选择允许任意网络中继！"
+            echo -e "  ${YELLOW}任何人都可使用本节点的公网带宽与流量，且可能被用于非法用途。${RESET}" >&2
+            printf "  ${YELLOW}确认继续？[y/N]: ${RESET}" >&2
+            read -r ans </dev/tty
+            if [[ ! "$ans" =~ ^[Yy]$ ]]; then
+                echo "" >&2
+                continue
+            fi
+        fi
+
+        echo "$val"
+        return 0
+    done
 }
 
 # ----------------------------------------------------------------
@@ -1500,6 +1570,27 @@ download_web_embed() {
 }
 
 # ----------------------------------------------------------------
+# 生成内存护栏配置段（MemoryHigh / MemoryMax）
+# MemoryHigh 为软限（超限仅节流与回收，不杀进程），MemoryMax 为硬限（超限 OOM）
+# 仅在 cgroup v2 且启用 memory 控制器时输出，避免旧系统/容器因不支持而启动失败
+# ----------------------------------------------------------------
+memory_limit_block() {
+    [ -f /sys/fs/cgroup/cgroup.controllers ] || return 0
+    grep -qw memory /sys/fs/cgroup/cgroup.controllers 2>/dev/null || return 0
+
+    local mem_mb max_mb high_mb
+    mem_mb=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+    [ "$mem_mb" -gt 0 ] || return 0
+
+    max_mb=$(( mem_mb / MEM_LIMIT_RATIO ))
+    [ "$max_mb" -lt "$MEM_LIMIT_MIN_MB" ] && max_mb="$MEM_LIMIT_MIN_MB"
+    [ "$max_mb" -gt "$MEM_LIMIT_MAX_MB" ] && max_mb="$MEM_LIMIT_MAX_MB"
+    high_mb=$(( max_mb * MEM_HIGH_PERCENT / 100 ))
+
+    printf 'MemoryHigh=%sM\nMemoryMax=%sM\n' "$high_mb" "$max_mb"
+}
+
+# ----------------------------------------------------------------
 # 生成 systemd 服务内容
 # ----------------------------------------------------------------
 generate_service() {
@@ -1511,22 +1602,31 @@ generate_service() {
         local udp_port="$4"
         local ws_port="$5"
         local wss_port="$6"
+        local whitelist="$7"
         cat <<EOF
 [Unit]
 Description=EasyTier Relay Service
-After=network.target network-online.target
+After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=${INSTALL_DIR}/easytier-core \
   --hostname "${relay_hostname}" \
   --listeners "tcp://0.0.0.0:${tcp_port}" "udp://0.0.0.0:${udp_port}" "ws://0.0.0.0:${ws_port}" "wss://0.0.0.0:${wss_port}" \
-  --relay-network-whitelist "*" \
+  --relay-network-whitelist "${whitelist}" \
   --relay-all-peer-rpc
-Restart=always
-RestartSec=5
-LimitNOFILE=1048576
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+Environment=RUST_LOG=${RUST_LOG_LEVEL}
+LimitNOFILE=65535
+$(memory_limit_block)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${SERVICE_NAME}
 
 [Install]
 WantedBy=multi-user.target
@@ -1536,38 +1636,52 @@ EOF
         cat <<EOF
 [Unit]
 Description=EasyTier Service (Config File Mode)
-After=network.target network-online.target
+After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStart=${INSTALL_DIR}/easytier-core -c ${CONFIG_FILE}
-Restart=always
-RestartSec=5
-LimitNOFILE=1048576
-Environment=TOKIO_CONSOLE=1
+ExecStart=${INSTALL_DIR}/easytier-core -c "${CONFIG_FILE}"
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+Environment=RUST_LOG=${RUST_LOG_LEVEL}
+LimitNOFILE=65535
+$(memory_limit_block)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${SERVICE_NAME}
 
 [Install]
 WantedBy=multi-user.target
 EOF
     else
-        # console 模式 (CLI 参数)
+        # 配置服务器模式 (CLI 参数，使用 -w/--config-server)
         local username="$2"
         local node_hostname="$3"
         local console_addr="$4"
         cat <<EOF
 [Unit]
-Description=EasyTier Service
-After=network.target network-online.target
+Description=EasyTier Service (Config Server Mode)
+After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=${INSTALL_DIR}/easytier-core -w "${console_addr}/${username}" --hostname "${node_hostname}"
-Restart=always
-RestartSec=5
-LimitNOFILE=1048576
-Environment=TOKIO_CONSOLE=1
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+Environment=RUST_LOG=${RUST_LOG_LEVEL}
+LimitNOFILE=65535
+$(memory_limit_block)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${SERVICE_NAME}
 
 [Install]
 WantedBy=multi-user.target
@@ -1602,20 +1716,28 @@ generate_web_service() {
     cat <<EOF
 [Unit]
 Description=EasyTier Web Console Service
-After=network.target network-online.target
+After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=${WEB_EMBED_BINARY} \
-  -d ${WEB_DB_DIR}/et.db \
+  -d "${WEB_DB_DIR}/et.db" \
   -l ${http_port} \
   -c ${console_port} \
   -p ${console_proto} \
-  --api-host http://${public_ip}:${http_port}
-Restart=always
-RestartSec=5
-LimitNOFILE=1048576
+  --api-host "http://${public_ip}:${http_port}"
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+Environment=RUST_LOG=${RUST_LOG_LEVEL}
+LimitNOFILE=65535
+$(memory_limit_block)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${WEB_SERVICE_NAME}
 
 [Install]
 WantedBy=multi-user.target
@@ -1806,6 +1928,10 @@ do_install() {
         ports_str=$(prompt_listen_ports)
         read -r tcp_port udp_port ws_port wss_port <<< "$ports_str"
 
+        echo -e "\n${BOLD}── 第 5 步：配置中继白名单 ──${RESET}" >&2
+        local whitelist
+        whitelist=$(prompt_relay_whitelist)
+
         echo -e "\n${BOLD}${CYAN}──────── 安装确认 ────────${RESET}"
         echo -e "  模式:     ${CYAN}服务端/中继模式${RESET}（不连接控制台）"
         echo -e "  版本:     ${CYAN}${version}${RESET}"
@@ -1815,6 +1941,7 @@ do_install() {
         echo -e "  UDP 端口: ${CYAN}${udp_port}${RESET}"
         echo -e "  WS  端口: ${CYAN}${ws_port}${RESET}"
         echo -e "  WSS 端口: ${CYAN}${wss_port}${RESET}"
+        echo -e "  白名单:   ${CYAN}${whitelist}${RESET}"
         echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
         printf "${YELLOW}确认安装？[Y/n]: ${RESET}" >&2
         read -r ans </dev/tty
@@ -1826,7 +1953,7 @@ do_install() {
             [ -d "$INSTALL_DIR" ] && rm -rf "$INSTALL_DIR"
             download_and_extract "$ARCH" "$version" "$download_method"
         fi
-        apply_service "$MODE_RELAY" "$relay_hostname" "$tcp_port" "$udp_port" "$ws_port" "$wss_port"
+        apply_service "$MODE_RELAY" "$relay_hostname" "$tcp_port" "$udp_port" "$ws_port" "$wss_port" "$whitelist"
         show_status
         return
     fi
@@ -2131,19 +2258,24 @@ do_modify() {
                 ports_str=$(prompt_listen_ports)
                 read -r tcp_port udp_port ws_port wss_port <<< "$ports_str"
 
+                echo -e "\n${BOLD}── 修改中继白名单 ──${RESET}" >&2
+                local whitelist
+                whitelist=$(prompt_relay_whitelist)
+
                 echo -e "\n${BOLD}${CYAN}──────── 修改确认 ────────${RESET}"
                 echo -e "  主机名:   ${CYAN}${relay_hostname}${RESET}"
                 echo -e "  TCP 端口: ${CYAN}${tcp_port}${RESET}"
                 echo -e "  UDP 端口: ${CYAN}${udp_port}${RESET}"
                 echo -e "  WS  端口: ${CYAN}${ws_port}${RESET}"
                 echo -e "  WSS 端口: ${CYAN}${wss_port}${RESET}"
+                echo -e "  白名单:   ${CYAN}${whitelist}${RESET}"
                 echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
                 printf "${YELLOW}确认修改并重启服务？[Y/n]: ${RESET}" >&2
                 read -r ans </dev/tty
                 ans="${ans:-Y}"
                 [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消修改。"; return 0; }
 
-                apply_service "$MODE_RELAY" "$relay_hostname" "$tcp_port" "$udp_port" "$ws_port" "$wss_port"
+                apply_service "$MODE_RELAY" "$relay_hostname" "$tcp_port" "$udp_port" "$ws_port" "$wss_port" "$whitelist"
                 show_status
                 return
                 ;;

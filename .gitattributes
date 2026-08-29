@@ -1,0 +1,14 @@
+# Shell 脚本必须在 Linux 上直接执行，强制 LF 行尾
+# 避免 Windows 下 core.autocrlf=true 把检出文件转成 CRLF，
+# 导致 bash 报 "set: pipefail: invalid option name" (CR 被当成选项名的一部分)
+*.sh text eol=lf
+
+# 文档统一 LF
+*.md text eol=lf
+
+# 二进制文件不做任何转换
+*.tar.gz binary
+*.gz binary
+*.zip binary
+*.png binary
+*.jpg binary
