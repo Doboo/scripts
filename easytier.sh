@@ -33,7 +33,11 @@ readonly MODE_CONSOLE_FILE="console_file"
 readonly MODE_RELAY="relay"
 
 # systemd 服务的日志级别
-# info 适合新装排障，长期运行觉得日志吵可改成 warn
+# info: 默认。能看到连接/路由/打洞过程，便于排障
+#   磁盘风险可控：journald 默认 SystemMaxUse=磁盘10%（上限 4G），超限自动删最旧归档，
+#   不会撑爆磁盘。仅在网络持续抖动时日志量会显著上升，可用 journalctl --disk-usage 观察。
+# warn: 日志量最小，适合常年无人值守的节点，但排障时看不到连接过程
+# 临时调整用 systemctl edit easytier 覆盖 Environment=RUST_LOG=
 readonly RUST_LOG_LEVEL="info"
 
 # 内存护栏上限：MemoryMax 取物理内存 1/4，并限制在 128M~1024M 之间
@@ -1622,6 +1626,7 @@ Restart=on-failure
 RestartSec=10
 TimeoutStopSec=20
 Environment=RUST_LOG=${RUST_LOG_LEVEL}
+LogLevelMax=info
 LimitNOFILE=65535
 $(memory_limit_block)
 StandardOutput=journal
@@ -1648,6 +1653,7 @@ Restart=on-failure
 RestartSec=10
 TimeoutStopSec=20
 Environment=RUST_LOG=${RUST_LOG_LEVEL}
+LogLevelMax=info
 LimitNOFILE=65535
 $(memory_limit_block)
 StandardOutput=journal
@@ -1677,6 +1683,7 @@ Restart=on-failure
 RestartSec=10
 TimeoutStopSec=20
 Environment=RUST_LOG=${RUST_LOG_LEVEL}
+LogLevelMax=info
 LimitNOFILE=65535
 $(memory_limit_block)
 StandardOutput=journal
@@ -1733,6 +1740,7 @@ Restart=on-failure
 RestartSec=10
 TimeoutStopSec=20
 Environment=RUST_LOG=${RUST_LOG_LEVEL}
+LogLevelMax=info
 LimitNOFILE=65535
 $(memory_limit_block)
 StandardOutput=journal
@@ -1771,7 +1779,18 @@ show_status() {
     sleep "$wait_sec"
 
     echo -e "\n${BOLD}────────── 最近 15 条日志 ──────────${RESET}" >&2
-    journalctl -u "${SERVICE_NAME}.service" -n 15 --no-pager 2>/dev/null || true
+    local boot_logs
+    boot_logs=$(journalctl -u "${SERVICE_NAME}.service" -n 15 --no-pager 2>/dev/null || true)
+    if [ -n "$boot_logs" ]; then
+        echo "$boot_logs" >&2
+    else
+        echo -e "  ${YELLOW}（无日志输出）${RESET}" >&2
+        if [ "${RUST_LOG_LEVEL}" = "warn" ]; then
+            echo -e "  ${YELLOW}日志级别为 warn，无警告/错误时不产生日志，属正常。${RESET}" >&2
+        else
+            echo -e "  ${YELLOW}日志级别为 ${RUST_LOG_LEVEL}，正常启动应有输出，此处为空请确认服务是否真正运行。${RESET}" >&2
+        fi
+    fi
     echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
 
     local svc_active
@@ -1782,6 +1801,11 @@ show_status() {
         error "服务状态异常（systemctl 报告: ${svc_active}），请检查上方日志。"
         info  "可运行以下命令查看完整日志:"
         echo  "    journalctl -xe -u ${SERVICE_NAME}.service" >&2
+        if [ "${RUST_LOG_LEVEL}" = "warn" ] && [ -z "$boot_logs" ]; then
+            warn "日志为空，可能是 ${RUST_LOG_LEVEL} 级别过滤掉了启动细节。排障建议:"
+            echo  "    systemctl edit ${SERVICE_NAME}    # 加入 [Service] 与 Environment=RUST_LOG=info" >&2
+            echo  "    systemctl restart ${SERVICE_NAME} 后重新查看日志，定位后改回 ${RUST_LOG_LEVEL}" >&2
+        fi
         return 1
     fi
 
@@ -1828,6 +1852,14 @@ show_status() {
     success "EasyTier 已成功连接并启动。"
     info "如需持续监控日志，运行:"
     echo "    journalctl -f -u ${SERVICE_NAME}.service" >&2
+    if [ "${RUST_LOG_LEVEL}" = "warn" ]; then
+        echo -e "  ${YELLOW}注：日志级别为 warn，运行正常时几乎没有输出。${RESET}" >&2
+        echo -e "  ${YELLOW}    排查连接问题时可临时调高：systemctl edit ${SERVICE_NAME}${RESET}" >&2
+        echo -e "  ${YELLOW}    加入 [Service] 与 Environment=RUST_LOG=info，改回后删掉即可${RESET}" >&2
+    else
+        echo -e "  ${YELLOW}注：日志级别为 ${RUST_LOG_LEVEL}，日志量受 journald 配额保护（默认磁盘 10%，上限 4G），不会撑爆磁盘。${RESET}" >&2
+        echo -e "  ${YELLOW}    查看本服务占用：journalctl -u ${SERVICE_NAME} --disk-usage${RESET}" >&2
+    fi
 
     # 如果 easytier-web 服务也在运行，显示其信息
     if systemctl is-active "$WEB_SERVICE_NAME" &>/dev/null; then
@@ -1844,6 +1876,10 @@ show_status() {
 # ----------------------------------------------------------------
 watch_logs() {
     echo -e "\n${BOLD}────────── 实时日志监控 ──────────${RESET}" >&2
+    if [ "${RUST_LOG_LEVEL}" = "warn" ]; then
+        echo -e "  ${YELLOW}日志级别为 warn，无警告/错误时不会刷新内容，并非卡住。${RESET}" >&2
+        echo -e "  ${YELLOW}想看连接详情请先用 systemctl edit ${SERVICE_NAME} 调高到 info${RESET}" >&2
+    fi
     echo -e "  ${GREEN}按 ${BOLD}Ctrl+C${RESET}${GREEN} 返回主菜单${RESET}" >&2
     echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
 

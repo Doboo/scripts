@@ -294,7 +294,9 @@ ExecStart=${LAUNCHER_BIN} -public
 WorkingDirectory=${INSTALL_DIR}
 Restart=always
 RestartSec=5
-LimitNOFILE=1048576
+# 1048576 正好卡在 fs.nr_open 默认临界值，容器/LXC/部分云镜像会
+# Failed at step RESOURCE_LIMITS 起不来，降到 65535 已足够高并发
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
