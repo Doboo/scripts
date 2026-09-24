@@ -77,7 +77,10 @@ detect_lan_if() {
     [ -n "$ifname" ] && echo "$ifname" || echo "eth0"
 }
 
-# 自动猜测 EasyTier 虚拟网卡：优先 easytier*，其次任意 tun*/utun*
+# 自动猜测 EasyTier 虚拟网卡：
+#   1) 优先 easytier*（用户显式 --dev-name 命名过的场景）
+#   2) 其次 tun*（EasyTier 默认设备名是 tun0）
+#   3) 都没有则默认 tun0（EasyTier 可能尚未启动）
 detect_vpn_if() {
     local ifname
     ifname=$(ip -o link show 2>/dev/null \
@@ -86,7 +89,7 @@ detect_vpn_if() {
         ifname=$(ip -o link show 2>/dev/null \
                  | awk -F': ' '$2 ~ /^tun/ {print $2; exit}' || true)
     fi
-    [ -n "$ifname" ] && echo "$ifname" || echo "easytier0"
+    [ -n "$ifname" ] && echo "$ifname" || echo "tun0"
 }
 
 if_exists() {
