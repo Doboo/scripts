@@ -277,6 +277,95 @@ do_uninstall() {
 }
 
 # ==============================================================================
+# 清理旧版脚本规则（v1 直接写在 FORWARD / POSTROUTING 主链里）
+# ==============================================================================
+do_cleanup_legacy() {
+    title "清理旧版脚本规则"
+
+    echo -e "${YELLOW}旧版脚本把规则直接写在 FORWARD / POSTROUTING 主链中，${RESET}"
+    echo -e "${YELLOW}与新版自定义链互不冲突但会重复生效，建议迁移前先清理。${RESET}"
+    echo
+
+    # 先展示当前主链规则，便于人工核对
+    echo -e "${BOLD}${CYAN}──────── 当前 FORWARD 规则 ────────${RESET}"
+    iptables -S FORWARD 2>/dev/null | grep -v -- "-j ET-FWD" || true
+    echo
+    echo -e "${BOLD}${CYAN}──────── 当前 POSTROUTING 规则 ────────${RESET}"
+    iptables -t nat -S POSTROUTING 2>/dev/null | grep -v -- "-j ET-SNAT" || true
+    echo
+
+    # 询问旧脚本当时使用的接口名
+    local lan_def vpn_def old_lan old_vpn
+    lan_def=$(detect_lan_if)
+    vpn_def=$(detect_vpn_if)
+    read -r -e -p "旧脚本使用的「局域网物理网卡」名称 (默认: ${lan_def}): " old_lan </dev/tty
+    old_lan="${old_lan:-$lan_def}"
+    read -r -e -p "旧脚本使用的「VPN虚拟网卡」名称 (默认: ${vpn_def}): " old_vpn </dev/tty
+    old_vpn="${old_vpn:-$vpn_def}"
+
+    read -r -p "确认删除上述接口相关的旧版规则？[Y/n]: " ans </dev/tty
+    ans="${ans:-Y}"
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+
+    local n=0
+    # 接口相关的转发规则（Docker 的规则只引用 docker* 接口，不会误删）
+    while iptables -C FORWARD -i "$old_lan" -o "$old_vpn" -j ACCEPT 2>/dev/null; do
+        iptables -D FORWARD -i "$old_lan" -o "$old_vpn" -j ACCEPT; n=$((n+1))
+    done
+    while iptables -C FORWARD -i "$old_vpn" -o "$old_lan" -j ACCEPT 2>/dev/null; do
+        iptables -D FORWARD -i "$old_vpn" -o "$old_lan" -j ACCEPT; n=$((n+1))
+    done
+    # 旧版 NAT 伪装规则
+    while iptables -t nat -C POSTROUTING -o "$old_vpn" -j MASQUERADE 2>/dev/null; do
+        iptables -t nat -D POSTROUTING -o "$old_vpn" -j MASQUERADE; n=$((n+1))
+    done
+    info "已删除 ${n} 条旧版接口/NAT 规则。"
+
+    # ESTABLISHED,RELATED 规则：可能与 Docker 等完全相同，无法区分归属。
+    # 统计条数：若多于 1 条，删 1 条后仍有同类规则兜底，安全；
+    # 若只有 1 条且来自旧脚本，删除后由新版 ET-FWD 链内的同款规则接管。
+    local cnt
+    cnt=$(iptables -S FORWARD 2>/dev/null | grep -c -- '-m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT' || true)
+    if [ "${cnt:-0}" -gt 0 ]; then
+        warn "检测到 ${cnt} 条 ESTABLISHED,RELATED 规则（旧版脚本与 Docker 等可能写入同款）。"
+        if [ "$cnt" -gt 1 ]; then
+            info "多于 1 条，删除 1 条后仍有同类规则兜底，安全。"
+            iptables -D FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+        else
+            read -r -p "仅 1 条，删除它吗？(新版 ET-FWD 链会提供同款规则) [y/N]: " ans </dev/tty
+            if [[ "${ans:-N}" =~ ^[Yy]$ ]]; then
+                iptables -D FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+                info "已删除。"
+            else
+                info "保留该规则（无碍，仅为冗余）。"
+            fi
+        fi
+    fi
+
+    # sysctl.conf 中旧版写入的 ip_forward 行：改为注释（新版走 sysctl.d 独立文件）
+    if grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf 2>/dev/null; then
+        warn "/etc/sysctl.conf 中存在旧版写入的 ip_forward=1。"
+        read -r -p "将其注释掉吗？(新版使用 /etc/sysctl.d/ 独立文件) [y/N]: " ans </dev/tty
+        if [[ "${ans:-N}" =~ ^[Yy]$ ]]; then
+            sed -i 's/^net.ipv4.ip_forward=1/#net.ipv4.ip_forward=1/' /etc/sysctl.conf
+            info "已注释。"
+        else
+            info "保留（无碍，仅为冗余）。"
+        fi
+    fi
+
+    # 更新持久化快照，否则重启后旧规则复活
+    if command -v netfilter-persistent &>/dev/null; then
+        netfilter-persistent save
+        info "持久化快照已更新。"
+    else
+        warn "未安装 netfilter-persistent，跳过快照更新。"
+    fi
+
+    success "旧版规则清理完成，请继续执行【配置/更新转发规则】完成迁移。"
+}
+
+# ==============================================================================
 # 状态查看
 # ==============================================================================
 do_status() {
@@ -357,14 +446,16 @@ main_menu() {
         echo -e "  ${BOLD}1)${RESET} 配置/更新转发规则"
         echo -e "  ${BOLD}2)${RESET} 查看状态"
         echo -e "  ${BOLD}3)${RESET} 卸载"
+        echo -e "  ${BOLD}4)${RESET} 清理旧版脚本规则（v1 迁移用）"
         echo -e "  ${BOLD}0)${RESET} 退出"
-        printf "请输入选项 [0-3]: "
+        printf "请输入选项 [0-4]: "
 
         read -r choice </dev/tty
         case "$choice" in
-            1) do_install   ;;
-            2) do_status    ;;
-            3) do_uninstall ;;
+            1) do_install        ;;
+            2) do_status         ;;
+            3) do_uninstall      ;;
+            4) do_cleanup_legacy ;;
             0) echo -e "${GREEN}再见！${RESET}"; exit 0 ;;
             *) warn "无效选项 '${choice}'，请重新输入。" ;;
         esac
