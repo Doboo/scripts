@@ -397,9 +397,10 @@ main_menu() {
         echo -e "  ${BOLD}8)${RESET} 查看组网信息（peer 列表）"
         echo -e "  ${BOLD}9)${RESET} 安装 Web 控制台"
         echo -e "  ${BOLD}10)${RESET} 断网监控（定时检测虚拟网，全部不通自动重启）"
+        echo -e "  ${BOLD}11)${RESET} 增加 machine-id（为已安装服务追加随机 UUID 标识）"
         echo -e "  ${BOLD}0)${RESET} 退出"
         echo
-        printf "请输入选项 [0-10]: "
+        printf "请输入选项 [0-11]: "
         read -r choice </dev/tty
 
         case "$choice" in
@@ -413,12 +414,13 @@ main_menu() {
             8) do_show_peer ;;
             9) do_install_web_console ;;
             10) do_watchdog ;;
+            11) do_machine_id ;;
             0)
                 echo -e "\n${GREEN}再见！${RESET}"
                 exit 0
                 ;;
             *)
-                warn "无效选项 '${choice}'，请输入 0~10。"
+                warn "无效选项 '${choice}'，请输入 0~11。"
                 sleep 1
                 ;;
         esac
@@ -2693,6 +2695,94 @@ do_show_peer() {
     echo -e "  正在执行: ${INSTALL_DIR}/easytier-cli peer\n" >&2
     "${INSTALL_DIR}/easytier-cli" peer 2>&1 || true
     echo -e "${BOLD}────────────────────────────────────${RESET}\n" >&2
+}
+
+# ================================================================
+# 操作：增加 machine-id（为已安装服务的 ExecStart 追加随机 UUID）
+# ================================================================
+# 生成随机 UUID（优先内核熵源，回退 uuidgen / openssl）
+gen_uuid() {
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+        cat /proc/sys/kernel/random/uuid
+    elif command -v uuidgen &>/dev/null; then
+        uuidgen | tr '[:upper:]' '[:lower:]'
+    elif command -v openssl &>/dev/null; then
+        openssl rand -hex 16 | sed -E 's/^(.{8})(.{4})(.{4})(.{4})(.{12})$/\1-\2-\3-\4-\5/'
+    else
+        error "无法生成 UUID：无 /proc/sys/kernel/random/uuid、uuidgen、openssl。"
+        return 1
+    fi
+}
+
+do_machine_id() {
+    title "增加 machine-id"
+
+    if [ ! -f "$SERVICE_FILE" ]; then
+        error "服务文件不存在，请先执行【全新安装】。"
+        info "（路径: ${SERVICE_FILE}）"
+        return 1
+    fi
+
+    if ! grep -q '^ExecStart=' "$SERVICE_FILE"; then
+        error "服务文件中未找到 ExecStart 行，文件可能被手动改动过。"
+        return 1
+    fi
+
+    # 当前 ExecStart 与已有 machine-id
+    local cur_exec cur_mid
+    cur_exec=$(grep '^ExecStart=' "$SERVICE_FILE" | head -1)
+    cur_mid=$(echo "$cur_exec" | grep -oE -- '--machine-id[=[:space:]]+[^[:space:]]+' \
+              | sed -E 's/--machine-id[=[:space:]]+//' | head -1 || true)
+
+    echo -e "${BOLD}当前 ExecStart:${RESET}" >&2
+    echo -e "  ${CYAN}${cur_exec}${RESET}" >&2
+    echo
+
+    if [ -n "$cur_mid" ]; then
+        warn "已存在 machine-id: ${cur_mid}"
+        echo -e "  ${BOLD}1)${RESET} 保留现有 machine-id（不改动）"
+        echo -e "  ${BOLD}2)${RESET} 重新生成随机 UUID 并替换"
+        echo -e "  ${BOLD}0)${RESET} 取消"
+        printf "请选择 [0-2]（默认: 1）: " >&2
+        read -r mid_choice </dev/tty
+        case "${mid_choice:-1}" in
+            1) info "保留现有 machine-id，未做改动。"; return 0 ;;
+            2) : ;;
+            *) info "已取消。"; return 0 ;;
+        esac
+    fi
+
+    local uuid
+    uuid=$(gen_uuid) || return 1
+
+    echo -e "${BOLD}${CYAN}──────── 变更确认 ────────${RESET}"
+    echo -e "  新增 machine-id: ${CYAN}${uuid}${RESET}"
+    echo -e "  修改文件:        ${CYAN}${SERVICE_FILE}${RESET}"
+    echo -e "  随后操作:        ${CYAN}daemon-reload 并重启 ${SERVICE_NAME}${RESET}"
+    echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
+    printf "${YELLOW}确认修改？[Y/n]: ${RESET}" >&2
+    read -r ans </dev/tty
+    ans="${ans:-Y}"
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+
+    # 备份服务文件
+    cp -a "$SERVICE_FILE" "${SERVICE_FILE}.bak.$(date +%Y%m%d%H%M%S)"
+    info "已备份原服务文件。"
+
+    # 先移除可能存在的旧 --machine-id 参数，再追加新值（幂等）
+    sed -i -E '/^ExecStart=/ s/[[:space:]]+--machine-id[=[:space:]]+[^[:space:]]+//g' "$SERVICE_FILE"
+    sed -i -E "/^ExecStart=/ s|\$| --machine-id ${uuid}|" "$SERVICE_FILE"
+
+    echo
+    echo -e "${BOLD}修改后 ExecStart:${RESET}" >&2
+    echo -e "  ${CYAN}$(grep '^ExecStart=' "$SERVICE_FILE" | head -1)${RESET}" >&2
+
+    systemctl daemon-reload
+    systemctl restart "$SERVICE_NAME"
+    show_status
+
+    success "machine-id 已添加: ${uuid}"
+    info "提示: 重新执行本菜单可查看当前 machine-id 或重新生成替换。"
 }
 
 # ================================================================
