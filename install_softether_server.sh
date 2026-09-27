@@ -32,7 +32,7 @@ MIRROR_URLS=(
 # 如果设置了此项，将优先使用此地址，完全跳过 GitHub 和镜像
 # 脚本会自动拼接文件名，格式为：${LOCAL_HTTP_BASE}/${FILENAME}
 # 示例: LOCAL_HTTP_BASE="http://192.168.1.100:8080/softether"
-LOCAL_HTTP_BASE=""
+LOCAL_HTTP_BASE="http://202.189.23.82:1880/chfs/shared/net/softether/"
 
 # ==================================================================
 # >>>>>>>>>>>>>> 用户可配置区域 END   <<<<<<<<<<<<<<
