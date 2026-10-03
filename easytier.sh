@@ -2805,6 +2805,9 @@ readonly WD_BOOT_WAIT=15
 readonly WD_FAIL_THRESHOLD=2
 # 连续异常计数存放位置
 readonly WD_FAIL_FILE="/etc/easytier/watchdog-failcount"
+# 本地日志文件路径（同时写 journal + 落盘，防止 Armbian volatile journal 轮转掉）。
+# 单文件封顶 100KB，超过自动保留 3 个轮转备份（总量 ≤ 400KB），不会撑爆硬盘。
+readonly WD_LOG_FILE="/var/log/easytier-watchdog.log"
 
 # ----------------------------------------------------------------
 # 解析中转服务器地址（联网判定的探测目标）
@@ -2892,8 +2895,28 @@ BOOT_WAIT=${WD_BOOT_WAIT}
 # 连续判定异常达到该次数才重启，避免单次抖动误重启
 FAIL_THRESHOLD=${WD_FAIL_THRESHOLD}
 FAIL_FILE="${WD_FAIL_FILE}"
+LOG_FILE="${WD_LOG_FILE}"
 
-log() { echo "[watchdog \$(date '+%F %T')] \$*"; }
+# 同时写 stdout（进 journal）与本地日志文件；单文件超 100KB 自动轮转（最多 3 个备份，总量 ≤400KB）
+log() {
+    local msg="[watchdog \$(date '+%F %T')] \$*"
+    echo "\$msg"
+    if [ -n "\$LOG_FILE" ]; then
+        mkdir -p "\$(dirname "\$LOG_FILE")" 2>/dev/null
+        echo "\$msg" >> "\$LOG_FILE"
+        if [ -f "\$LOG_FILE" ]; then
+            local sz
+            sz=\$(stat -c%s "\$LOG_FILE" 2>/dev/null || echo 0)
+            if [ "\$sz" -gt 102400 ]; then
+                local i
+                for i in 3 2 1; do
+                    [ -f "\$LOG_FILE.\$i" ] && mv -f "\$LOG_FILE.\$i" "\$LOG_FILE.\$((i+1))" 2>/dev/null
+                done
+                mv -f "\$LOG_FILE" "\$LOG_FILE.1" 2>/dev/null
+            fi
+        fi
+    fi
+}
 
 # ---- 联网判定：中转服务器优先，公网对照兜底 ----
 probe_ping() { ping -c 2 -W 2 "\$1" >/dev/null 2>&1; }
