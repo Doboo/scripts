@@ -2801,6 +2801,10 @@ readonly WD_MAX_LIST_IP=5
 readonly WD_PUBLIC_PROBES=( "223.5.5.5" "114.114.114.114" )
 # 重启服务后等待隧道重建的秒数，之后才用 easytier-cli 刷新地址列表
 readonly WD_BOOT_WAIT=15
+# 连续判定异常达到该次数才重启服务（1=单次失败即重启，2=需连续两次，可抗单次抖动）
+readonly WD_FAIL_THRESHOLD=2
+# 连续异常计数存放位置
+readonly WD_FAIL_FILE="/etc/easytier/watchdog-failcount"
 
 # ----------------------------------------------------------------
 # 解析中转服务器地址（联网判定的探测目标）
@@ -2885,6 +2889,9 @@ RELAY_PORT="${relay_port}"
 RELAY_PROTO="${relay_proto}"
 PUBLIC_PROBES=(${probes})
 BOOT_WAIT=${WD_BOOT_WAIT}
+# 连续判定异常达到该次数才重启，避免单次抖动误重启
+FAIL_THRESHOLD=${WD_FAIL_THRESHOLD}
+FAIL_FILE="${WD_FAIL_FILE}"
 
 log() { echo "[watchdog \$(date '+%F %T')] \$*"; }
 
@@ -2977,6 +2984,38 @@ refresh_ip_list() {
     return 0
 }
 
+# ---- 连续异常计数：达到阈值才重启，避免单次抖动误重启 ----
+read_fail_count() {
+    local n
+    n=\$(cat "\$FAIL_FILE" 2>/dev/null | tr -d '[:space:]')
+    case "\$n" in
+        ''|*[!0-9]*) n=0 ;;
+    esac
+    echo "\$n"
+}
+
+reset_fail_count() {
+    mkdir -p "\$(dirname "\$FAIL_FILE")"
+    echo 0 > "\$FAIL_FILE"
+}
+
+on_fail_round() {
+    local n
+    n=\$((\$(read_fail_count) + 1))
+    mkdir -p "\$(dirname "\$FAIL_FILE")"
+    echo "\$n" > "\$FAIL_FILE"
+
+    if [ "\$n" -ge "\$FAIL_THRESHOLD" ]; then
+        log "连续第 \${n} 次判定异常（阈值 \${FAIL_THRESHOLD}），重启 \${SERVICE}..."
+        systemctl restart "\$SERVICE"
+        sleep "\$BOOT_WAIT"
+        reset_fail_count
+        refresh_ip_list
+    else
+        log "判定异常（连续第 \${n} 次 / 阈值 \${FAIL_THRESHOLD}），暂不重启，下一轮再确认。"
+    fi
+}
+
 if ! command -v ping >/dev/null 2>&1; then
     log "缺少 ping 命令（iputils-ping），无法检测，跳过本次。"
     exit 0
@@ -2988,10 +3027,8 @@ if ! net_ok; then
 fi
 
 if ! ip link show dev "\$IFACE" >/dev/null 2>&1; then
-    log "虚拟网卡 \${IFACE} 未创建，重启 \${SERVICE}..."
-    systemctl restart "\$SERVICE"
-    sleep "\$BOOT_WAIT"
-    refresh_ip_list
+    log "虚拟网卡 \${IFACE} 未创建（隧道未建立）"
+    on_fail_round
     exit 0
 fi
 
@@ -3003,12 +3040,11 @@ done < <(load_ips)
 if [ \${#IPS[@]} -eq 0 ]; then
     log "地址列表为空（\${IP_LIST_FILE}），尝试用 easytier-cli 初始化..."
     if refresh_ip_list; then
+        reset_fail_count
         exit 0
     fi
-    log "初始化失败，判定隧道异常，重启 \${SERVICE}..."
-    systemctl restart "\$SERVICE"
-    sleep "\$BOOT_WAIT"
-    refresh_ip_list
+    log "初始化失败"
+    on_fail_round
     exit 0
 fi
 
@@ -3023,9 +3059,10 @@ for ip in "\${IPS[@]}"; do
 done
 
 if [ "\$reachable" -eq 0 ]; then
-    log "地址列表中所有地址都不通，重启 \${SERVICE}..."
-    systemctl restart "\$SERVICE"
-    sleep "\$BOOT_WAIT"
+    log "地址列表中所有地址都不通"
+    on_fail_round
+else
+    reset_fail_count
 fi
 
 refresh_ip_list
@@ -3141,7 +3178,8 @@ watchdog_enable() {
     echo -e "  easytier-cli: ${CYAN}${cli_status}${RESET}"
     echo -e "  检测周期:   ${CYAN}每 ${WD_INTERVAL_MIN} 分钟（systemd timer）${RESET}"
     echo -e "  检测顺序:   ${CYAN}联网判定 → 网卡检查 → 列表 ping（全部不通才重启）${RESET}"
-    echo -e "  触发动作:   ${CYAN}网卡不存在 或 全部 ping 不通 → 重启 ${SERVICE_NAME}${RESET}"
+    echo -e "  触发动作:   ${CYAN}网卡不存在 或 全部 ping 不通 → 判定异常${RESET}"
+    echo -e "  重启条件:   ${CYAN}连续 ${WD_FAIL_THRESHOLD} 次判定异常才重启（抗单次抖动误重启）${RESET}"
     echo -e "${BOLD}${CYAN}──────────────────────────────${RESET}\n"
     printf "${YELLOW}确认启用？[Y/n]: ${RESET}" >&2
     read -r ans </dev/tty
@@ -3224,6 +3262,15 @@ watchdog_status() {
         echo -e "  列表内容: ${CYAN}$(grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' "$WD_IP_LIST" 2>/dev/null | tr '\n' ' ')${RESET}"
     else
         echo -e "  地址列表: ${YELLOW}${WD_IP_LIST}（不存在或为空，首次检测时自动初始化）${RESET}"
+    fi
+
+    local fc=0
+    [ -s "$WD_FAIL_FILE" ] && fc=$(tr -d '[:space:]' < "$WD_FAIL_FILE" 2>/dev/null)
+    case "$fc" in ''|*[!0-9]*) fc=0 ;; esac
+    if [ "$fc" -gt 0 ]; then
+        echo -e "  连续异常: ${YELLOW}${fc} 次${RESET}（阈值 ${WD_FAIL_THRESHOLD}，再连续 $((WD_FAIL_THRESHOLD - fc)) 次将重启服务）"
+    else
+        echo -e "  连续异常: ${GREEN}0 次${RESET}（阈值 ${WD_FAIL_THRESHOLD}）"
     fi
 
     echo
