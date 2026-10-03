@@ -2793,60 +2793,242 @@ readonly WD_SERVICE_FILE="/etc/systemd/system/easytier-watchdog.service"
 readonly WD_TIMER_FILE="/etc/systemd/system/easytier-watchdog.timer"
 readonly WD_TIMER_NAME="easytier-watchdog.timer"
 readonly WD_INTERVAL_MIN=15
+# 待检测的虚拟网地址列表（每行一个 IP，# 开头为注释），由 easytier-cli 自动维护
+readonly WD_IP_LIST="/etc/easytier/watchdog-ips.txt"
+# 每次刷新时最多取几个对端虚拟 IP
+readonly WD_MAX_LIST_IP=5
+# 联网判定的公网兜底对照地址（中转服务器探测失败时使用）
+readonly WD_PUBLIC_PROBES=( "223.5.5.5" "114.114.114.114" )
+# 重启服务后等待隧道重建的秒数，之后才用 easytier-cli 刷新地址列表
+readonly WD_BOOT_WAIT=15
 
 # ----------------------------------------------------------------
-# 生成监控脚本本体（配置写在文件头部，便于事后手动调整）
+# 解析中转服务器地址（联网判定的探测目标）
+# 输出: "协议 主机 端口"，解析不到时输出空
+#   console_file 模式 → 取配置文件里的第一个 peer URI
+#   console     模式 → 取 -w 参数中的控制台地址（去掉用户名部分）
+#   relay       模式 → 自身即为中转，无上游可探测，输出空（交由公网兜底）
+# ----------------------------------------------------------------
+wd_resolve_relay_target() {
+    local mode uri proto host port rest
+    mode=$(read_current_mode)
+
+    case "$mode" in
+        "$MODE_CONSOLE_FILE")
+            uri=$(read_current_conf_peer_uri)
+            ;;
+        "$MODE_CONSOLE")
+            # read_current_config 已剥离用户名部分，返回 "协议://主机:端口"
+            uri=$(read_current_config)
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+
+    [ -n "$uri" ] || return 0
+    [[ "$uri" == *://* ]] || return 0
+
+    proto="${uri%%://*}"
+    rest="${uri#*://}"
+    rest="${rest%%/*}"
+    host="${rest%%:*}"
+    port=""
+    if [ "$rest" != "$host" ]; then
+        port="${rest##*:}"
+    fi
+
+    [ -n "$host" ] || return 0
+    echo "${proto} ${host} ${port}"
+}
+
+# ----------------------------------------------------------------
+# 生成监控脚本本体（配置写在文件头部，检测地址存放在独立文件）
 # ----------------------------------------------------------------
 generate_watchdog_script() {
-    local iface="$1"; shift
-    local ips=("$@")
-    local ip_list="" ip
-    for ip in "${ips[@]}"; do
-        ip_list+="\"${ip}\" "
+    local iface="$1"
+    local relay_host="$2"
+    local relay_port="$3"
+    local relay_proto="$4"
+    local et_cli="$5"
+
+    local probes="" p
+    for p in "${WD_PUBLIC_PROBES[@]}"; do
+        probes+="\"${p}\" "
     done
-    ip_list="${ip_list% }"
+    probes="${probes% }"
 
     cat <<EOF
 #!/usr/bin/env bash
 # EasyTier 断网监控（由 easytier.sh「断网监控」菜单生成，可直接编辑本文件）
 # 触发方式：systemd timer（easytier-watchdog.timer），每 ${WD_INTERVAL_MIN} 分钟一次。
-# 逻辑：
-#   1. 虚拟网卡不存在 → 隧道未建立，重启服务
-#   2. 网卡存在 → 逐 IP ping（强制走虚拟网卡），全部不通 → 重启服务
+#
+# 检测顺序：
+#   1. 联网判定：先探测中转服务器${relay_host:+ ${relay_host}}，不通则回退公网对照地址
+#      → 判定为外网中断时直接跳过，不重启服务（重启也修不好外网）
+#   2. 虚拟网卡 ${iface} 不存在 → 重启服务
+#   3. 逐 IP ping 地址列表（强制走虚拟网卡），全部不通 → 重启服务
+#   4. 收尾：联网正常时用 easytier-cli 取前 ${WD_MAX_LIST_IP} 个对端虚拟 IP 写回列表文件
+#
+# 待检测地址列表（每行一个 IP，# 开头为注释，本脚本自动维护，也可手动编辑）：
+#   ${WD_IP_LIST}
+
 IFACE="${iface}"
-IPS=(${ip_list})
+IP_LIST_FILE="${WD_IP_LIST}"
+MAX_LIST_IP=${WD_MAX_LIST_IP}
 COUNT=2
 TIMEOUT=2
 SERVICE="${SERVICE_NAME}"
+ET_CLI="${et_cli}"
+RELAY_HOST="${relay_host}"
+RELAY_PORT="${relay_port}"
+RELAY_PROTO="${relay_proto}"
+PUBLIC_PROBES=(${probes})
+BOOT_WAIT=${WD_BOOT_WAIT}
 
 log() { echo "[watchdog \$(date '+%F %T')] \$*"; }
+
+# ---- 联网判定：中转服务器优先，公网对照兜底 ----
+probe_ping() { ping -c 2 -W 2 "\$1" >/dev/null 2>&1; }
+
+probe_tcp() {
+    [ -n "\$2" ] || return 1
+    timeout 3 bash -c "exec 3<>/dev/tcp/\$1/\$2" >/dev/null 2>&1
+}
+
+net_ok() {
+    if [ -n "\$RELAY_HOST" ]; then
+        if probe_ping "\$RELAY_HOST"; then
+            log "联网判定: 中转服务器 \${RELAY_HOST} ping 可达 ✓"
+            return 0
+        fi
+        case "\$RELAY_PROTO" in
+            tcp|ws|wss)
+                if probe_tcp "\$RELAY_HOST" "\$RELAY_PORT"; then
+                    log "联网判定: 中转服务器 \${RELAY_HOST}:\${RELAY_PORT} (\${RELAY_PROTO}) 端口可连 ✓"
+                    return 0
+                fi
+                ;;
+        esac
+        log "联网判定: 中转服务器 \${RELAY_HOST} 不可达，回退公网对照"
+    fi
+
+    local p
+    for p in "\${PUBLIC_PROBES[@]}"; do
+        if probe_ping "\$p"; then
+            log "联网判定: 公网对照 \${p} 可达 ✓"
+            return 0
+        fi
+        log "联网判定: 公网对照 \${p} 不可达"
+    done
+    return 1
+}
+
+# ---- 读取地址列表 ----
+load_ips() {
+    [ -s "\$IP_LIST_FILE" ] || return 1
+    grep -oE '^[^#]*' "\$IP_LIST_FILE" \\
+        | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' || return 1
+}
+
+# ---- 用 easytier-cli 刷新地址列表（排除本机节点，最多 MAX_LIST_IP 个） ----
+refresh_ip_list() {
+    local tmp="\${IP_LIST_FILE}.tmp"
+    if [ ! -x "\$ET_CLI" ]; then
+        log "刷新地址列表失败: \${ET_CLI} 不存在或不可执行"
+        return 1
+    fi
+
+    mkdir -p "\$(dirname "\$IP_LIST_FILE")"
+
+    if command -v jq >/dev/null 2>&1; then
+        "\$ET_CLI" -o json peer list 2>/dev/null \\
+            | jq -r '.[] | select((.ipv4 != "") and (.cost != "Local")) | .ipv4' 2>/dev/null \\
+            | head -n "\$MAX_LIST_IP" > "\$tmp"
+        if [ ! -s "\$tmp" ]; then
+            "\$ET_CLI" -o json peer list 2>/dev/null \\
+                | jq -r '.[] | select(.ipv4 != "") | .ipv4' 2>/dev/null \\
+                | head -n "\$MAX_LIST_IP" > "\$tmp"
+        fi
+    else
+        # 无 jq：从表格输出里按 IP 形态提取，跳过本机行（cost 为 Local）
+        "\$ET_CLI" peer list 2>/dev/null | awk -v max="\$MAX_LIST_IP" '
+            /Local/ { next }
+            {
+                if (match(\$0, /([0-9]{1,3}\\.){3}[0-9]{1,3}/)) {
+                    ip = substr(\$0, RSTART, RLENGTH)
+                    if (ip != "0.0.0.0" && !(ip in seen)) {
+                        seen[ip] = 1
+                        print ip
+                        if (++n >= max) exit
+                    }
+                }
+            }' > "\$tmp"
+    fi
+
+    if [ ! -s "\$tmp" ]; then
+        rm -f "\$tmp"
+        log "刷新地址列表失败: easytier-cli 未返回任何虚拟 IP"
+        return 1
+    fi
+
+    mv "\$tmp" "\$IP_LIST_FILE"
+    log "地址列表已刷新为: \$(tr '\\n' ' ' < "\$IP_LIST_FILE")"
+    return 0
+}
 
 if ! command -v ping >/dev/null 2>&1; then
     log "缺少 ping 命令（iputils-ping），无法检测，跳过本次。"
     exit 0
 fi
 
-if ! ip link show dev "\$IFACE" >/dev/null 2>&1; then
-    log "虚拟网卡 \${IFACE} 未创建，重启 \${SERVICE}..."
-    systemctl restart "\$SERVICE"
+if ! net_ok; then
+    log "外网不可达（中转服务器与公网对照均不通），判定为外网中断，与 \${SERVICE} 无关，跳过本次。"
     exit 0
 fi
 
-all_failed=true
+if ! ip link show dev "\$IFACE" >/dev/null 2>&1; then
+    log "虚拟网卡 \${IFACE} 未创建，重启 \${SERVICE}..."
+    systemctl restart "\$SERVICE"
+    sleep "\$BOOT_WAIT"
+    refresh_ip_list
+    exit 0
+fi
+
+IPS=()
+while IFS= read -r ip; do
+    [ -n "\$ip" ] && IPS+=("\$ip")
+done < <(load_ips)
+
+if [ \${#IPS[@]} -eq 0 ]; then
+    log "地址列表为空（\${IP_LIST_FILE}），尝试用 easytier-cli 初始化..."
+    if refresh_ip_list; then
+        exit 0
+    fi
+    log "初始化失败，判定隧道异常，重启 \${SERVICE}..."
+    systemctl restart "\$SERVICE"
+    sleep "\$BOOT_WAIT"
+    refresh_ip_list
+    exit 0
+fi
+
+reachable=0
 for ip in "\${IPS[@]}"; do
     if ping -c "\$COUNT" -W "\$TIMEOUT" -I "\$IFACE" "\$ip" >/dev/null 2>&1; then
-        log "IP \$ip 可达，网络正常。"
-        all_failed=false
+        log "虚拟网 \${ip} 可达 ✓"
+        reachable=1
         break
-    else
-        log "IP \$ip 不可达。"
     fi
+    log "虚拟网 \${ip} 不可达 ✗"
 done
 
-if \$all_failed; then
-    log "所有 IP 都 ping 不通，重启 \${SERVICE} 服务..."
+if [ "\$reachable" -eq 0 ]; then
+    log "地址列表中所有地址都不通，重启 \${SERVICE}..."
     systemctl restart "\$SERVICE"
+    sleep "\$BOOT_WAIT"
 fi
+
+refresh_ip_list
 EOF
 }
 
@@ -2902,39 +3084,64 @@ watchdog_enable() {
         }
     fi
 
+    # jq（用于解析 easytier-cli 的 JSON 输出；缺失时监控脚本自动退化为文本解析）
+    local jq_status="已安装"
+    if ! command -v jq &>/dev/null; then
+        warn "未检测到 jq，尝试安装..."
+        if apt-get update -y -qq && apt-get install -y -qq jq; then
+            info "jq 安装完成。"
+        else
+            warn "jq 安装失败，监控脚本将自动退化为文本解析 easytier-cli 输出。"
+            jq_status="未安装（文本解析回退）"
+        fi
+    fi
+
+    # easytier-cli 路径（刷新地址列表用）
+    local et_cli="${INSTALL_DIR}/easytier-cli"
+    local cli_status="${et_cli}"
+    if [ ! -x "$et_cli" ]; then
+        et_cli="$(command -v easytier-cli 2>/dev/null || true)"
+        cli_status="${et_cli:-未找到}"
+        [ -n "$et_cli" ] || warn "未找到 easytier-cli，地址列表将无法自动刷新（可手动维护 ${WD_IP_LIST}）。"
+    fi
+
     # 虚拟网卡名
     local iface
     read -r -e -p "请输入要监控的虚拟网卡名（默认: tun0）: " iface </dev/tty
     iface="${iface:-tun0}"
 
-    # IP 列表
-    echo
-    info "请输入要 ping 检测的 IPv4 地址列表，用空格分隔。"
-    info "应为 EasyTier 虚拟网内稳定在线的对端地址（如中继/网关）。"
-    read -r -e -p "IP 列表（默认: 10.144.144.1 10.144.144.144）: " ip_input </dev/tty
-    ip_input="${ip_input:-10.144.144.1 10.144.144.144}"
+    # 中转服务器地址（联网判定目标）
+    local relay_proto="" relay_host="" relay_port=""
+    read -r relay_proto relay_host relay_port <<< "$(wd_resolve_relay_target)"
 
-    # 校验
-    local ips=() ip bad=()
+    # 可选预置地址：留空则由 easytier-cli 自动生成
+    echo
+    info "地址列表文件: ${WD_IP_LIST}"
+    info "每次检测结束后，会用 easytier-cli 取前 ${WD_MAX_LIST_IP} 个对端虚拟 IP 自动覆盖该文件。"
+    info "如需预置种子地址（可选），请输入；直接回车则由 easytier-cli 生成。"
+    read -r -e -p "预置地址（空格分隔，可留空）: " ip_input </dev/tty
+
+    local seed_ips=() ip bad=()
     for ip in $ip_input; do
         if [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            ips+=("$ip")
+            seed_ips+=("$ip")
         else
             bad+=("$ip")
         fi
     done
     [ ${#bad[@]} -gt 0 ] && warn "已忽略格式非法的地址: ${bad[*]}"
-    if [ ${#ips[@]} -eq 0 ]; then
-        error "没有可用的 IPv4 地址，监控未启用。"
-        return 1
-    fi
 
     # 确认
     echo -e "\n${BOLD}${CYAN}──────── 监控配置确认 ────────${RESET}"
-    echo -e "  监控网卡: ${CYAN}${iface}${RESET}"
-    echo -e "  检测地址: ${CYAN}${ips[*]}${RESET}"
-    echo -e "  检测周期: ${CYAN}每 ${WD_INTERVAL_MIN} 分钟（systemd timer）${RESET}"
-    echo -e "  触发动作: ${CYAN}网卡不存在 或 全部 ping 不通 → 重启 ${SERVICE_NAME}${RESET}"
+    echo -e "  监控网卡:   ${CYAN}${iface}${RESET}"
+    echo -e "  地址列表:   ${CYAN}${WD_IP_LIST}${RESET}"
+    echo -e "  中转服务器: ${CYAN}${relay_host:-未解析到（仅用公网对照兜底）}${RESET}"
+    echo -e "  公网对照:   ${CYAN}${WD_PUBLIC_PROBES[*]}${RESET}"
+    echo -e "  jq 状态:    ${CYAN}${jq_status}${RESET}"
+    echo -e "  easytier-cli: ${CYAN}${cli_status}${RESET}"
+    echo -e "  检测周期:   ${CYAN}每 ${WD_INTERVAL_MIN} 分钟（systemd timer）${RESET}"
+    echo -e "  检测顺序:   ${CYAN}联网判定 → 网卡检查 → 列表 ping（全部不通才重启）${RESET}"
+    echo -e "  触发动作:   ${CYAN}网卡不存在 或 全部 ping 不通 → 重启 ${SERVICE_NAME}${RESET}"
     echo -e "${BOLD}${CYAN}──────────────────────────────${RESET}\n"
     printf "${YELLOW}确认启用？[Y/n]: ${RESET}" >&2
     read -r ans </dev/tty
@@ -2942,8 +3149,15 @@ watchdog_enable() {
     [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
 
     # 写入文件
-    generate_watchdog_script "$iface" "${ips[@]}" > "$WD_SCRIPT"
+    generate_watchdog_script "$iface" "$relay_host" "$relay_port" "$relay_proto" "${et_cli:-${INSTALL_DIR}/easytier-cli}" > "$WD_SCRIPT"
     chmod +x "$WD_SCRIPT"
+
+    # 预置种子地址（用户填写时写入，否则留给监控脚本首次运行时自动生成）
+    if [ ${#seed_ips[@]} -gt 0 ]; then
+        mkdir -p "$(dirname "$WD_IP_LIST")"
+        printf '%s\n' "${seed_ips[@]}" > "$WD_IP_LIST"
+        info "已预置地址列表: ${seed_ips[*]}"
+    fi
     generate_watchdog_service > "$WD_SERVICE_FILE"
     generate_watchdog_timer  > "$WD_TIMER_FILE"
 
@@ -3001,7 +3215,15 @@ watchdog_status() {
 
     if [ -f "$WD_SCRIPT" ]; then
         echo -e "  监控脚本: ${CYAN}${WD_SCRIPT}${RESET}"
-        echo -e "  当前配置: ${CYAN}$(grep -E '^(IFACE|IPS|COUNT|TIMEOUT|SERVICE)=' "$WD_SCRIPT" | tr '\n' ' ')${RESET}"
+        echo -e "  当前配置: ${CYAN}$(grep -E '^(IFACE|IP_LIST_FILE|MAX_LIST_IP|COUNT|TIMEOUT|SERVICE|RELAY_HOST|RELAY_PORT|RELAY_PROTO)=' "$WD_SCRIPT" | tr '\n' ' ')${RESET}"
+    fi
+
+    echo
+    if [ -s "$WD_IP_LIST" ]; then
+        echo -e "  地址列表: ${CYAN}${WD_IP_LIST}${RESET}"
+        echo -e "  列表内容: ${CYAN}$(grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' "$WD_IP_LIST" 2>/dev/null | tr '\n' ' ')${RESET}"
+    else
+        echo -e "  地址列表: ${YELLOW}${WD_IP_LIST}（不存在或为空，首次检测时自动初始化）${RESET}"
     fi
 
     echo
@@ -3012,6 +3234,31 @@ watchdog_status() {
     echo -e "${BOLD}────────── 最近 20 条监控日志 ──────────${RESET}" >&2
     journalctl -u easytier-watchdog.service -n 20 --no-pager 2>/dev/null \
         || info "暂无日志（监控可能尚未运行过）。"
+}
+
+# ----------------------------------------------------------------
+# 立即执行一次检测（会实际重启服务，执行前需确认）
+# ----------------------------------------------------------------
+watchdog_run_once() {
+    title "立即执行一次检测"
+
+    if [ ! -x "$WD_SCRIPT" ]; then
+        warn "监控脚本 ${WD_SCRIPT} 不存在，请先执行【启用 / 更新配置】。"
+        return 1
+    fi
+
+    warn "注意：若判定虚拟网断开（列表中所有地址都不通），本操作会重启 ${SERVICE_NAME} 服务。"
+    printf "${YELLOW}确认执行？[y/N]: ${RESET}" >&2
+    read -r ans </dev/tty
+    [[ "$ans" =~ ^[Yy]$ ]] || { info "已取消。"; return 0; }
+
+    echo -e "${BOLD}────────────────────────────────${RESET}"
+    "$WD_SCRIPT" 2>&1 || true
+    echo -e "${BOLD}────────────────────────────────${RESET}"
+
+    if [ -s "$WD_IP_LIST" ]; then
+        info "当前地址列表: $(tr '\n' ' ' < "$WD_IP_LIST")"
+    fi
 }
 
 # ----------------------------------------------------------------
@@ -3032,16 +3279,18 @@ do_watchdog() {
         echo -e "  ${BOLD}1)${RESET} 启用 / 更新配置"
         echo -e "  ${BOLD}2)${RESET} 停用"
         echo -e "  ${BOLD}3)${RESET} 查看状态与日志"
+        echo -e "  ${BOLD}4)${RESET} 立即执行一次检测（并刷新地址列表）"
         echo -e "  ${BOLD}0)${RESET} 返回主菜单"
-        printf "请输入选项 [0-3]: "
+        printf "请输入选项 [0-4]: "
         read -r wd_choice </dev/tty
 
         case "$wd_choice" in
             1) watchdog_enable  ;;
             2) watchdog_disable ;;
             3) watchdog_status  ;;
+            4) watchdog_run_once ;;
             0) return 0 ;;
-            *) warn "无效选项 '${wd_choice}'，请输入 0~3。" ;;
+            *) warn "无效选项 '${wd_choice}'，请输入 0~4。" ;;
         esac
 
         echo
