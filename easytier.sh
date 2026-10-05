@@ -3542,8 +3542,10 @@ etgw_prompt_interfaces() {
     LAN_CIDR=$([ -n "$lan_cidr" ] && etgw_cidr_net "$lan_cidr" || echo "")
     VPN_CIDR=$([ -n "$vpn_cidr" ] && etgw_cidr_net "$vpn_cidr" || echo "")
     LAN_IP=$([ -n "$lan_cidr" ] && etgw_cidr_ip "$lan_cidr" || echo "")
-    [ -n "$LAN_CIDR" ] && info "局域网网段: ${CYAN}${LAN_CIDR}${RESET}（本机 IP: ${LAN_IP}）"
-    [ -n "$VPN_CIDR" ] && info "虚拟网网段: ${CYAN}${VPN_CIDR}${RESET}"
+    # 注意：末尾的 [ -n ... ] && info 必须补 || true，否则值为空时返回 1，
+    # 在 set -e 下会让整个脚本直接中止（曾导致"选完网卡就退出"）。
+    [ -n "$LAN_CIDR" ] && info "局域网网段: ${CYAN}${LAN_CIDR}${RESET}（本机 IP: ${LAN_IP}）" || true
+    [ -n "$VPN_CIDR" ] && info "虚拟网网段: ${CYAN}${VPN_CIDR}${RESET}" || true
 }
 
 # ==============================================================================
