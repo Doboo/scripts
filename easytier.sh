@@ -75,10 +75,14 @@ success() { echo -e "${BOLD}${GREEN}$*${RESET}" >&2; }
 # ----------------------------------------------------------------
 TMP_ZIP=$(mktemp /tmp/easytier_XXXXXX.zip)
 
+# 后台下载进程 PID（带进度显示时用，便于中断时清理）
+DL_PID=""
+
 # ----------------------------------------------------------------
 # 清理与信号处理
 # ----------------------------------------------------------------
 cleanup() {
+    [ -n "$DL_PID" ] && kill "$DL_PID" 2>/dev/null || true
     rm -f "$TMP_ZIP"
 }
 trap cleanup EXIT
@@ -1442,6 +1446,179 @@ prompt_download_method() {
 }
 
 # ----------------------------------------------------------------
+# 下载辅助：进度 / 速率 / 预计剩余时间
+# ----------------------------------------------------------------
+
+# 毫秒级时间戳：优先 bash 内建 EPOCHREALTIME，回退到秒级 date
+_now_ms() {
+    local t="${EPOCHREALTIME:-}"
+    if [ -n "$t" ]; then
+        t="${t%%,*}"                      # 兼容以逗号为小数分隔符的 locale
+        local s="${t%%.*}" frac
+        if [ "$t" = "$s" ]; then
+            frac="000"
+        else
+            frac="${t#*.}000"
+            frac="${frac:0:3}"
+        fi
+        printf '%s%s' "$s" "$frac"
+    else
+        printf '%s000' "$(date +%s)"
+    fi
+}
+
+# 字节数转可读单位（纯 bash 整数运算，避免依赖 awk/bc）
+_human_size() {
+    local b="${1:-0}"
+    case "$b" in
+        ''|*[!0-9]*) b=0 ;;
+    esac
+    if   [ "$b" -lt 1024 ];       then printf '%d B' "$b"
+    elif [ "$b" -lt 1048576 ];    then printf '%d.%d KB' $(( b / 1024 )) $(( b % 1024 * 10 / 1024 ))
+    elif [ "$b" -lt 1073741824 ]; then printf '%d.%d MB' $(( b / 1048576 )) $(( b % 1048576 * 10 / 1048576 ))
+    else                               printf '%d.%d GB' $(( b / 1073741824 )) $(( b % 1073741824 * 10 / 1073741824 ))
+    fi
+}
+
+# 获取远程文件大小（字节），取不到返回 0
+# chfs 等服务器不支持 HEAD，统一发一个字节的 Range 请求，从 Content-Range 取总长度
+# -L 用于跟随 GitHub Release 到 objects.githubusercontent.com 的 302 跳转
+_get_remote_size() {
+    local url="$1" hdr="" total="" code=""
+    if command -v curl >/dev/null 2>&1; then
+        hdr=$(curl -sL -D - -o /dev/null -r 0-0 --connect-timeout 8 --max-time 12 "$url" 2>/dev/null | tr -d '\r')
+        # 首个状态行是初始响应（跳转为 3xx），非 2xx/3xx 说明是错误页，不取其长度
+        code=$(printf '%s\n' "$hdr" | awk '/^HTTP\// { print $2; exit }')
+        case "$code" in
+            2[0-9][0-9]|3[0-9][0-9]) ;;
+            *) printf '0'; return 0 ;;
+        esac
+        total=$(printf '%s\n' "$hdr" | awk '/[Cc]ontent-[Rr]ange:/ {
+            for (i = 1; i <= NF; i++) if ($i ~ /\/[0-9]+$/) { sub(/.*\//, "", $i); print $i; exit }
+        }')
+        if [ -z "$total" ]; then
+            total=$(printf '%s\n' "$hdr" | awk '/[Cc]ontent-[Ll]ength:/ { print $2; exit }')
+        fi
+    fi
+    case "$total" in
+        ''|*[!0-9]*) printf '0' ;;
+        *)           printf '%s' "$total" ;;
+    esac
+}
+
+# 监视后台下载进程并实时刷新进度（stdout/stderr 非终端时退化为每秒一行日志）
+# 用法: watch_download <pid> <目标文件> <总字节数，0 表示未知>
+watch_download() {
+    local pid="$1" file="$2" total="${3:-0}"
+    local is_tty=0 interval=0.5
+    if [ -t 2 ]; then is_tty=1; else interval=1; fi
+    if [ "$interval" != "1" ] && ! sleep 0.2 2>/dev/null; then interval=1; fi
+
+    local start prev_t prev_size=0 cur now dt inst rate=0
+    start=$(_now_ms)
+    prev_t=$start
+
+    local spins='|/-\' si=0
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep "$interval"
+        cur=$(stat -c %s "$file" 2>/dev/null) || cur=0
+        [ -n "$cur" ] || cur=0
+        now=$(_now_ms)
+        dt=$(( now - prev_t ))
+        if [ "$dt" -gt 0 ]; then
+            inst=$(( (cur - prev_size) * 1000 / dt ))
+            if [ "$inst" -lt 0 ]; then inst=0; fi
+            # 指数平滑，避免速率数字剧烈跳动
+            if [ "$rate" -eq 0 ]; then rate=$inst; else rate=$(( rate * 3 / 4 + inst / 4 )); fi
+            prev_size=$cur
+            prev_t=$now
+        fi
+
+        local msg
+        if [ "$total" -gt 0 ]; then
+            local pct=$(( cur * 100 / total ))
+            if [ "$pct" -gt 100 ]; then pct=100; fi
+            local filled=$(( pct * 20 / 100 ))
+            local bar="" i
+            for ((i = 0; i < filled; i++)); do bar+="█"; done
+            for ((i = filled; i < 20; i++)); do bar+="░"; done
+            local eta="-"
+            if [ "$cur" -ge "$total" ]; then
+                eta="0s"
+            elif [ "$rate" -gt 0 ]; then
+                eta="$(( (total - cur) / rate ))s"
+            fi
+            msg="[${bar}] ${pct}%  $(_human_size "$cur")/$(_human_size "$total")  $(_human_size "$rate")/s  剩余 ${eta}"
+        else
+            local sp="${spins:$si:1}"
+            si=$(( (si + 1) % 4 ))
+            msg="${sp} 已下载 $(_human_size "$cur")  $(_human_size "$rate")/s"
+        fi
+
+        if [ "$is_tty" -eq 1 ]; then
+            printf '\r\033[2K  %s' "$msg" >&2
+        else
+            info "$msg"
+        fi
+    done
+
+    local rc=0
+    wait "$pid" || rc=$?
+
+    cur=$(stat -c %s "$file" 2>/dev/null) || cur=0
+    local elapsed_ms=$(( $(_now_ms) - start ))
+    local elapsed=$(( elapsed_ms / 1000 ))
+    local avg=0
+    if [ "$elapsed_ms" -gt 0 ]; then avg=$(( cur * 1000 / elapsed_ms )); fi
+    local done_msg
+    if [ "$rc" -eq 0 ]; then
+        done_msg="下载完成: $(_human_size "$cur")  平均 $(_human_size "$avg")/s  用时 ${elapsed}s"
+    else
+        done_msg="下载中断: 已接收 $(_human_size "$cur")  用时 ${elapsed}s"
+    fi
+    if [ "$is_tty" -eq 1 ]; then
+        printf '\r\033[2K  %s\n' "$done_msg" >&2
+    else
+        info "$done_msg"
+    fi
+    return $rc
+}
+
+# ----------------------------------------------------------------
+# 下载：通用流程（取大小 → 后台下载 → 进度显示 → 完整性校验）
+# 用法: download_with_progress <url> <输出文件>
+# ----------------------------------------------------------------
+download_with_progress() {
+    local url="$1"
+    local output="$2"
+
+    local total
+    total=$(_get_remote_size "$url")
+    if [ "$total" -gt 0 ]; then info "文件大小: $(_human_size "$total")"; fi
+
+    # 清空目标文件，避免复用同一临时文件时进度从旧值起算
+    : > "$output"
+
+    wget -q --timeout=15 -O "$output" "$url" 2>/dev/null &
+    DL_PID=$!
+
+    if ! watch_download "$DL_PID" "$output" "$total"; then
+        DL_PID=""
+        return 1
+    fi
+    DL_PID=""
+
+    local got
+    got=$(stat -c %s "$output" 2>/dev/null) || got=0
+    if [ "$got" -eq 0 ] || { [ "$total" -gt 0 ] && [ "$got" -ne "$total" ]; }; then
+        error "下载文件不完整（$(_human_size "$got") / $(_human_size "$total")）。"
+        return 1
+    fi
+    return 0
+}
+
+# ----------------------------------------------------------------
 # 下载：本地镜像
 # ----------------------------------------------------------------
 download_from_local() {
@@ -1450,7 +1627,7 @@ download_from_local() {
     local url="${LOCAL_MIRROR}/${rel_path}"
 
     info "从本地镜像下载: ${url}"
-    if wget -q --timeout=15 -O "$output" "$url" 2>/dev/null; then
+    if download_with_progress "$url" "$output"; then
         info "本地镜像下载成功。"
         return 0
     fi
@@ -1467,7 +1644,7 @@ download_from_proxy() {
 
     for proxy in "${PROXY_LIST[@]}"; do
         info "尝试代理: ${proxy}"
-        if wget -q --timeout=15 -O "$output" "${proxy}${github_url}" 2>/dev/null; then
+        if download_with_progress "${proxy}${github_url}" "$output"; then
             info "代理下载成功: ${proxy}"
             return 0
         fi
@@ -1486,7 +1663,7 @@ download_from_github_direct() {
     local output="$2"
 
     info "直接从 GitHub 下载: ${github_url}"
-    if wget -q --timeout=15 -O "$output" "$github_url" 2>/dev/null; then
+    if download_with_progress "$github_url" "$output"; then
         info "GitHub 直接下载成功。"
         return 0
     fi
