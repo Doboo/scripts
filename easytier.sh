@@ -13,7 +13,11 @@ readonly SERVICE_FILE="/etc/systemd/system/easytier.service"
 readonly SERVICE_NAME="easytier"
 readonly CONFIG_FILE="/etc/easytier/easytier.yaml"
 readonly DEFAULT_CONSOLE_HOST="udp://cfgs.175419.xyz:22020"
-readonly LOCAL_MIRROR="http://202.189.23.82:1880/chfs/shared/easytier"
+# 本地镜像服务器列表：按顺序尝试，前一个不可用自动回退到下一个
+readonly LOCAL_MIRRORS=(
+    "http://119.45.46.205:8888/chfs/shared/easytier"
+    "http://202.189.23.82:1880/chfs/shared/easytier"
+)
 
 # Web 控制台相关常量
 readonly WEB_EMBED_BINARY="${INSTALL_DIR}/easytier-web-embed"
@@ -1428,8 +1432,12 @@ prompt_download_method() {
 
     while true; do
         printf "\n请选择下载方式:\n" >&2
-        printf "  ${BOLD}1)${RESET} 本地镜像服务器（默认，推荐，速度快）\n" >&2
-        printf "     地址: ${BLUE}${LOCAL_MIRROR}${RESET}\n" >&2
+        printf "  ${BOLD}1)${RESET} 本地镜像服务器（默认，推荐，速度快；主镜像失败自动回退备用镜像）\n" >&2
+        local mi=1
+        for mirror in "${LOCAL_MIRRORS[@]}"; do
+            printf "     镜像${mi}: ${BLUE}%s${RESET}\n" "$mirror" >&2
+            mi=$((mi + 1))
+        done
         printf "  ${BOLD}2)${RESET} GitHub 代理下载（ghfast.top / gh-proxy.com / ghproxylist.com / mirror.ghproxy.com）\n" >&2
         printf "  ${BOLD}3)${RESET} 直接从 GitHub 下载（需能直连 github.com）\n" >&2
         printf "请输入选项 [1/2/3]（默认: 1）: " >&2
@@ -1624,14 +1632,20 @@ download_with_progress() {
 download_from_local() {
     local rel_path="$1"
     local output="$2"
-    local url="${LOCAL_MIRROR}/${rel_path}"
 
-    info "从本地镜像下载: ${url}"
-    if download_with_progress "$url" "$output"; then
-        info "本地镜像下载成功。"
-        return 0
-    fi
-    error "本地镜像下载失败，请检查网络或服务器状态。"
+    local idx=1 mirror url
+    for mirror in "${LOCAL_MIRRORS[@]}"; do
+        url="${mirror}/${rel_path}"
+        info "从本地镜像 ${idx}/${#LOCAL_MIRRORS[@]} 下载: ${url}"
+        if download_with_progress "$url" "$output"; then
+            info "本地镜像下载成功（镜像 ${idx}: ${mirror}）。"
+            return 0
+        fi
+        warn "本地镜像 ${idx} 下载失败，尝试下一个..."
+        idx=$((idx + 1))
+    done
+
+    error "所有本地镜像均下载失败，请检查网络或服务器状态。"
     return 1
 }
 
