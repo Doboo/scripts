@@ -3557,6 +3557,12 @@ do_watchdog() {
 #   让 Debian 12 小主机/盒子作为 EasyTier 旁路网关，转发
 #   EasyTier 虚拟网段 <-> 物理局域网段的双向数据。
 #
+#   一套规则同时支持两个方向，部署时无需选择用途：
+#     出向：局域网设备（如硬盘录像机）经本网关访问远端 EasyTier 代理的网段
+#           （摄像头网段等）。本机需作为这些设备的网关。
+#     入向：VPN 侧设备经本网关访问本机局域网（如远程访问本机侧摄像头）。
+#           需要 EasyTier 宣告本机局域网，并给回包指路。
+#
 # 关于 NAT（重要，决定了规则为何是现在这个样子）:
 #   官方文档 https://easytier.cn/guide/network/network-to-network.html
 #   只需 3 条命令，但前提是「节点 A 是该子网的网关」——回包必然经过本节点，
@@ -3566,9 +3572,22 @@ do_watchdog() {
 #     a) 路由器加静态路由（本脚本默认，推荐）——零 NAT，两端互见真实 IP
 #     b) LAN 出口 MASQUERADE（路由器不可控时的兜底）——LAN 侧看到的
 #        来源 IP 变成本网关的 LAN IP
-#   注意：无论选哪种，VPN 出口都不做 MASQUERADE。EasyTier 的子网代理
-#   （配置文件 [[proxy_network]] cidr = "..."）已把 LAN 网段通告给全网，
-#   远端节点天然有回程路由；在此做 SNAT 只会抹掉真实来源 IP。
+#   注意：以下两条 NAT 方向不同，缺一不可：
+#   a) LAN 出口（-o LAN_IF）：默认不做。仅当路由器加不了静态路由时才用它兜回程。
+#      EasyTier 的子网代理已把LAN 网段通告给全网，正常情况下回程由路由器静态
+#      路由保证；在此做 SNAT 只会抹掉真实来源 IP。
+#   b) VPN 出口（-o VPN_IF）：**必需项，无条件启用，不要删**（v2.1 起）。
+#      EasyTier 的 proxy 网关（gateway::wrapped_proxy）只放行源地址属于本机
+#      已宣告 proxy 网段的包。LAN 设备（如录像机 192.168.15.4）的包以真实源地址
+#      进 tun0 时不做 SNAT，会被判为未授权而丢弃，日志持续刷：
+#        WARN easytier::gateway::wrapped_proxy: Kcp nat 2 nat packet,
+#             src: 192.168.15.4 dst: 172.16.17.202 not allow wrapped input
+#      做 SNAT 后源地址被改写为本机虚拟 IP（10.144.144.x，在proxy 网段内）即放行。
+#      此项与 proxy_network 能否下发**无关**——即使 Proxy CIDRs 为空也依然需要。
+#      实测缺失时的特征：ET-FWD 的 enp1s0->tun0 计数在涨（包进了内核），
+#      但 tun0->enp1s0 恒为 0 且无任何回包，即单向丢弃。
+#      代价：VPN 侧看到的来源是本机虚拟 IP 而非 LAN 设备真实 IP；
+#      对 NVR 等多路 RTSP/HTTP 并发场景无影响。
 #
 # 设计要点（相对旧版 iptables-et.sh 的改进）:
 #   1. 全部规则放入自定义链 ET-FWD / ET-SNAT / ET-MSS，
@@ -3730,18 +3749,27 @@ etgw_prompt_interfaces() {
 # ==============================================================================
 etgw_prompt_lan_nat() {
     echo
-    echo -e "${BOLD}${CYAN}──────── 回程路由策略 ────────${RESET}"
-    echo -e "  VPN 侧设备访问局域网时，局域网设备的回包怎么回到本网关？"
+    echo -e "${BOLD}${CYAN}──────── 回程路由策略（VPN 侧 → 局域网）────────${RESET}"
+    echo -e "  本网关会同时支持两个方向，无需选择用途："
+    echo -e "    · 局域网设备 → 访问远端 EasyTier 网段（出向）"
+    echo -e "    · VPN 侧 → 访问本机局域网（入向）"
     echo -e ""
-    echo -e "  ${BOLD}1)${RESET} 路由器已加静态路由 / 局域网设备网关指向本机（${BOLD}默认，推荐${RESET}）"
-    echo -e "     → 零 NAT，VPN 侧与局域网侧互见真实 IP"
+    echo -e "  出向已由 ${CYAN}-o ${VPN_IF} MASQUERADE${RESET} 保证，无需任何配置。"
+    echo -e "  此处只问入向：VPN 侧的包进来后，局域网设备的${BOLD}回包${RESET}如何回到本网关？"
+    echo -e ""
+    echo -e "  ${BOLD}1)${RESET} 用路由指回本网关（${BOLD}默认，推荐${RESET}）—— 零 NAT，两侧互见真实 IP"
+    echo -e "     两种做法任选，效果等价："
+    echo -e "       ${BOLD}1a 路由器加静态路由${RESET}（一次生效于全网段设备）"
     if [ -n "$VPN_CIDR" ] && [ -n "$LAN_IP" ]; then
-        echo -e "     → 需在路由器上执行: ${CYAN}ip route add ${VPN_CIDR} via ${LAN_IP}${RESET}"
+        echo -e "          ${CYAN}ip route add ${VPN_CIDR} via ${LAN_IP}${RESET}"
     else
-        echo -e "     → 需在路由器上执行: ${CYAN}ip route add <虚拟网段> via <本机局域网IP>${RESET}"
+        echo -e "          ${CYAN}ip route add <虚拟网段> via <本机局域网IP>${RESET}"
     fi
-    echo -e "  ${BOLD}2)${RESET} 路由器不可控，改不了路由表（兜底）"
-    echo -e "     → 在局域网出口做 MASQUERADE，回包必然回到本机；"
+    echo -e "       ${BOLD}1b 设备直接改网关${RESET}：把需要互通的设备网关填 ${CYAN}${LAN_IP:-<本机局域网IP>}${RESET}"
+    echo -e "          ${YELLOW}注意: 该设备全部流量（含公网）都过本机，本机成为其单点故障。${RESET}"
+    echo -e ""
+    echo -e "  ${BOLD}2)${RESET} 以上两种都做不了（路由器不可控且设备不能改网关）—— 兜底"
+    echo -e "     → 在局域网出口做 MASQUERADE，本网关伪装来源，回包必然回到本机；"
     echo -e "       代价是局域网侧看到的来源 IP 是本网关的局域网 IP"
     echo -e ""
     read -r -p "请选择 [1/2]（默认: 1）: " ans </dev/tty
@@ -3766,13 +3794,21 @@ etgw_enable_forward() {
     info "IPv4 转发已开启并写入 ${SYSCTL_FILE}"
 }
 
-# 摘除 SNAT 链的挂载点与链本身（幂等，供 LAN_NAT=no 与卸载流程共用）
-etgw_remove_snat() {
+# 摘除 LAN 出口 SNAT 链的挂载点与链本身（幂等，供 LAN_NAT=no 与卸载流程共用）
+# 只处理 LAN 方向的 ET-SNAT 链；VPN 出口的必需规则不在此链内，不受影响。
+etgw_remove_lan_snat() {
     while iptables -t nat -C POSTROUTING -j "$SNAT_CHAIN" 2>/dev/null; do
         iptables -t nat -D POSTROUTING -j "$SNAT_CHAIN"
     done
     iptables -t nat -F "$SNAT_CHAIN" 2>/dev/null || true
     iptables -t nat -X "$SNAT_CHAIN" 2>/dev/null || true
+}
+
+# 摘除 VPN 出口的必需 MASQUERADE（仅卸载流程使用）
+etgw_remove_vpn_masquerade() {
+    while iptables -t nat -C POSTROUTING -o "$VPN_IF" -j MASQUERADE 2>/dev/null; do
+        iptables -t nat -D POSTROUTING -o "$VPN_IF" -j MASQUERADE
+    done
 }
 
 # ==============================================================================
@@ -3797,10 +3833,20 @@ etgw_apply_rules() {
         iptables -I FORWARD 1 -j "$FWD_CHAIN"
     fi
 
-    # ---- NAT：默认不做 ----
-    # EasyTier 的子网代理（[[proxy_network]] cidr）已把 LAN 网段通告给全网，
-    # 远端节点天然有回程路由，再挂 MASQUERADE 只会抹掉真实来源 IP。
-    # 仅当路由器加不了静态路由时，才用 LAN 出口 MASQUERADE 兜底回程。
+    # ---- NAT-1：VPN 出口 MASQUERADE（必需项，不可关闭）----
+    # EasyTier proxy 网关只放行源地址属于本机已宣告proxy 网段的包。
+    # LAN 设备以真实源地址进 tun0 会被判为未授权而丢弃
+    # （gateway::wrapped_proxy: "not allow wrapped input"）。
+    # 做 SNAT 后源地址变成本机虚拟 IP，随即放行。先删后加，保证幂等不叠加。
+    while iptables -t nat -C POSTROUTING -o "$VPN_IF" -j MASQUERADE 2>/dev/null; do
+        iptables -t nat -D POSTROUTING -o "$VPN_IF" -j MASQUERADE
+    done
+    iptables -t nat -A POSTROUTING -o "$VPN_IF" -j MASQUERADE
+    info "已启用 ${VPN_IF} 出口 MASQUERADE（LAN 设备经本网关访问虚拟网段的必需项）。"
+
+    # ---- NAT-2：LAN 出口 MASQUERADE（默认不做）----
+    # 仅用于 VPN→LAN 方向的回程兜底：路由器加不了静态路由时才需要。
+    # 做了会让 LAN 侧看到的来源 IP 变成本机 LAN IP。
     if [ "$LAN_NAT" = "yes" ]; then
         iptables -t nat -N "$SNAT_CHAIN" 2>/dev/null || true
         iptables -t nat -F "$SNAT_CHAIN"
@@ -3810,8 +3856,8 @@ etgw_apply_rules() {
         fi
         info "已启用 ${LAN_IF} 出口 MASQUERADE（回程兜底，LAN 侧看到的来源为本机 IP）。"
     else
-        etgw_remove_snat
-        info "零 NAT 模式：未添加任何 SNAT/MASQUERADE 规则。"
+        etgw_remove_lan_snat
+        info "LAN 出口零 NAT：未添加 ${LAN_IF} 方向 SNAT（回程由路由器静态路由保证）。"
     fi
 
     # ---- MSS 钳制：解决 TUN MTU < 物理网卡 MTU 的黑洞问题 ----
@@ -3826,7 +3872,7 @@ etgw_apply_rules() {
     if [ "$LAN_NAT" = "yes" ]; then
         info "转发规则应用完成（自定义链: ${FWD_CHAIN} / ${SNAT_CHAIN} / ${MSS_CHAIN}）。"
     else
-        info "转发规则应用完成（自定义链: ${FWD_CHAIN} / ${MSS_CHAIN}，无 NAT 链）。"
+        info "转发规则应用完成（自定义链: ${FWD_CHAIN} / ${MSS_CHAIN}；NAT 仅 VPN 出口必需项）。"
     fi
 }
 
@@ -3854,7 +3900,8 @@ etgw_uninstall() {
     while iptables -C FORWARD -j "$FWD_CHAIN" 2>/dev/null; do
         iptables -D FORWARD -j "$FWD_CHAIN"
     done
-    etgw_remove_snat
+    etgw_remove_lan_snat
+    etgw_remove_vpn_masquerade
     while iptables -t mangle -C FORWARD -j "$MSS_CHAIN" 2>/dev/null; do
         iptables -t mangle -D FORWARD -j "$MSS_CHAIN"
     done
@@ -3991,8 +4038,17 @@ etgw_status() {
     iptables -S "$FWD_CHAIN" 2>/dev/null || echo -e "  ${YELLOW}不存在（未安装）${RESET}"
 
     echo
-    echo -e "${BOLD}NAT 链 ${SNAT_CHAIN}:${RESET}" >&2
+    echo -e "${BOLD}NAT 链 ${SNAT_CHAIN}（LAN 出口，可选）:${RESET}" >&2
     iptables -t nat -S "$SNAT_CHAIN" 2>/dev/null || echo -e "  ${YELLOW}不存在（零 NAT 模式，正常）${RESET}"
+
+    echo
+    echo -e "${BOLD}VPN 出口 MASQUERADE（必需项）:${RESET}" >&2
+    if iptables -t nat -C POSTROUTING -o "$VPN_IF" -j MASQUERADE 2>/dev/null; then
+        echo -e "  ${GREEN}已启用 ✓${RESET} (-o ${VPN_IF})"
+        iptables -t nat -L POSTROUTING -n -v | grep -- "-o ${VPN_IF}" | sed 's/^/  /' || true
+    else
+        echo -e "  ${RED}缺失 ✗${RESET} LAN 设备将无法访问虚拟网段（单向不通）"
+    fi
 
     echo
     echo -e "${BOLD}MSS 钳制链 ${MSS_CHAIN}:${RESET}" >&2
@@ -4016,7 +4072,8 @@ etgw_install() {
     echo -e "\n${BOLD}${CYAN}──────── 配置确认 ────────${RESET}"
     echo -e "  局域网网卡:   ${CYAN}${LAN_IF}${RESET}"
     echo -e "  EasyTier 网卡: ${CYAN}${VPN_IF}${RESET}"
-    echo -e "  LAN 出口 NAT: ${CYAN}$([ "$LAN_NAT" = "yes" ] && echo "启用（回程兜底，来源显示为网关 IP）" || echo "停用（零 NAT，需路由器静态路由）")${RESET}"
+    echo -e "  ${BOLD}出向${RESET}（局域网→远端网段）: ${GREEN}始终启用${RESET} ${CYAN}-o ${VPN_IF} MASQUERADE${RESET}"
+    echo -e "  ${BOLD}入向${RESET}（VPN侧→局域网回程）: ${CYAN}$([ "$LAN_NAT" = "yes" ] && echo "MASQUERADE 兜底（来源显示为网关 IP）" || echo "零 NAT（需路由器静态路由或设备改网关）")${RESET}"
     echo -e "  规则载体:     ${CYAN}自定义链（不影响 Docker 等既有规则）${RESET}"
     echo -e "${BOLD}${CYAN}──────────────────────────${RESET}\n"
     read -r -p "确认应用？[Y/n]: " ans </dev/tty
@@ -4029,39 +4086,44 @@ etgw_install() {
 
     echo
     success "EasyTier 旁路网关配置完成！"
+    echo -e "  ${GREEN}本网关已同时启用两个方向，无需选择用途：${RESET}"
+    echo -e "    ${BOLD}出向${RESET} 局域网设备 → 远端 EasyTier 网段"
+    echo -e "         由 ${CYAN}-o ${VPN_IF} MASQUERADE${RESET} 保证，设备把网关指向本机即可，"
+    echo -e "         回程由 SNAT 连接跟踪自动完成，${BOLD}无需${RESET}在路由器上做任何配置。"
+    echo -e "    ${BOLD}入向${RESET} VPN 侧 → 本机局域网（如远程访问本机摄像头网段）"
+    echo -e "         需要 EasyTier 宣告本机局域网，并给回包指路（见下）。"
     echo -e "  ${YELLOW}提示: 已启用 MSS 钳制，避免 TUN MTU 导致网页打不开。${RESET}"
-    echo -e "  ${YELLOW}提示: EasyTier 侧需配置子网代理，在配置文件中加入：${RESET}"
-    if [ -n "$LAN_CIDR" ]; then
-        echo -e "        ${CYAN}[[proxy_network]]${RESET}"
-        echo -e "        ${CYAN}cidr = \"${LAN_CIDR}\"${RESET}"
-    else
-        echo -e "        ${CYAN}[[proxy_network]]${RESET}"
-        echo -e "        ${CYAN}cidr = \"<局域网网段，如 192.168.3.0/24>\"${RESET}"
-    fi
+
     echo
     if [ "$LAN_NAT" = "yes" ]; then
-        echo -e "  ${GREEN}当前为 MASQUERADE 兜底模式，现在起两个网段应已互通。${RESET}"
+        echo -e "  ${GREEN}入向已用 MASQUERADE 兜底，两个网段现在起应已互通。${RESET}"
         echo -e "  ${YELLOW}注意: 局域网侧看到的来源 IP 是本机的局域网 IP（${LAN_IP:-本机}），非 VPN 源 IP。${RESET}"
     else
-        echo -e "  ${GREEN}当前为零 NAT 模式，还需给回程指路，否则 VPN→LAN 单向不通。${RESET}"
-        echo -e "  ${BOLD}方式 A（推荐，改一处即可双向互通）${RESET} —— 在路由器上加静态路由，"
-        echo -e "      因为局域网设备的默认网关本来就是路由器，这一条同时覆盖去程与回程："
+        echo -e "  ${BOLD}入向还需两步（否则只有出向通、入向不通）:${RESET}"
+        echo -e "  ${BOLD}第 1 步${RESET} 让 EasyTier 宣告本机局域网，在配置中加入："
+        if [ -n "$LAN_CIDR" ]; then
+            echo -e "        ${CYAN}[[proxy_network]]${RESET}"
+            echo -e "        ${CYAN}cidr = \"${LAN_CIDR}\"${RESET}"
+        else
+            echo -e "        ${CYAN}[[proxy_network]]${RESET}"
+            echo -e "        ${CYAN}cidr = \"<局域网网段，如 192.168.3.0/24>\"${RESET}"
+        fi
+        echo -e "        ${YELLOW}（只需要出向、不需要远程访问本机局域网时，这一步可省略）${RESET}"
+        echo -e ""
+        echo -e "  ${BOLD}第 2 步${RESET} 给回包指路，两种方式任选其一："
+        echo -e "    ${BOLD}方式 1 路由器加静态路由（推荐）${RESET} 一次生效于全网段设备："
         if [ -n "$VPN_CIDR" ] && [ -n "$LAN_IP" ]; then
             echo -e "      ${CYAN}ip route add ${VPN_CIDR} via ${LAN_IP}${RESET}"
         else
             echo -e "      ${CYAN}ip route add <虚拟网段> via <本机局域网IP>${RESET}"
         fi
-        echo -e "  ${BOLD}方式 B（路由器不可控时，逐台设备）${RESET} —— 二选一："
+        echo -e "    ${BOLD}方式 2 设备直接改网关${RESET} 把需要互通的设备网关填 ${CYAN}${LAN_IP:-<本机局域网IP>}${RESET}："
+        echo -e "      ${YELLOW}注意: 该设备全部流量（含公网）都过本机，本机成为其单点故障；${RESET}"
+        echo -e "      ${YELLOW}      同接口进出还会触发 ICMP 重定向，导致流量路径不一致。${RESET}"
+        echo -e "      ${YELLOW}      仅 VPN 流量过本机的替代做法（Linux）: ${RESET}"
         if [ -n "$VPN_CIDR" ] && [ -n "$LAN_IP" ]; then
-            echo -e "    ${BOLD}B-1 明细路由（推荐）${RESET} 仅 VPN 流量过本机，公网照常走路由器："
-            echo -e "      Linux:   ${CYAN}ip route add ${VPN_CIDR} via ${LAN_IP}${RESET}"
-            echo -e "      Windows: ${CYAN}route -p add ${VPN_CIDR} mask 255.255.255.0 ${LAN_IP}${RESET}"
-            echo -e "    ${BOLD}B-2 整个网关指向本机${RESET}：把设备网关填 ${CYAN}${LAN_IP}${RESET}"
-            echo -e "      ${YELLOW}注意: 该设备的全部流量（含公网）都过本机，本机成为其单点故障；${RESET}"
-            echo -e "      ${YELLOW}      同接口进出还会触发 ICMP 重定向，导致流量路径不一致。${RESET}"
-        else
-            echo -e "    ${BOLD}B-1 明细路由（推荐）${RESET} Linux: ${CYAN}ip route add <虚拟网段> via <本机局域网IP>${RESET}"
-            echo -e "    ${BOLD}B-2 整个网关指向本机${RESET}（全部流量过本机，有单点故障风险）"
+            echo -e "      ${CYAN}ip route add ${VPN_CIDR} via ${LAN_IP}${RESET}"
+            echo -e "      ${CYAN}Windows: route -p add ${VPN_CIDR} mask 255.255.255.0 ${LAN_IP}${RESET}"
         fi
     fi
 }
