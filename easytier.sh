@@ -3968,11 +3968,14 @@ etgw_cleanup_legacy() {
     while iptables -C FORWARD -i "$old_vpn" -o "$old_lan" -j ACCEPT 2>/dev/null; do
         iptables -D FORWARD -i "$old_vpn" -o "$old_lan" -j ACCEPT; n=$((n+1))
     done
-    # 旧版 NAT 伪装规则
+    # 旧版 NAT 伪装规则（VPN 出口）
+    # 注意：这条现在是**必需项**，不能只删不加。先删是为了去掉旧版可能留下的
+    # 重复条目，随后立刻重建唯一一条——否则清理完就直接单向不通了。
     while iptables -t nat -C POSTROUTING -o "$old_vpn" -j MASQUERADE 2>/dev/null; do
         iptables -t nat -D POSTROUTING -o "$old_vpn" -j MASQUERADE; n=$((n+1))
     done
-    info "已删除 ${n} 条旧版接口/NAT 规则。"
+    iptables -t nat -A POSTROUTING -o "$old_vpn" -j MASQUERADE
+    info "已删除 ${n} 条旧版接口/NAT 规则，并重建 ${old_vpn} 出口 MASQUERADE（必需项）。"
 
     # ESTABLISHED,RELATED 规则：可能与 Docker 等完全相同，无法区分归属。
     # 统计条数：若多于 1 条，删 1 条后仍有同类规则兜底，安全；
