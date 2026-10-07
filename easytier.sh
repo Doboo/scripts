@@ -74,6 +74,18 @@ error()   { echo -e "${RED}[ERROR]${RESET} $*" >&2; }
 title()   { echo -e "\n${BOLD}${BLUE}>>> $* ${RESET}" >&2; }
 success() { echo -e "${BOLD}${GREEN}$*${RESET}" >&2; }
 
+# 从终端读取一行到指定变量。
+# 用于"必填项为空则重新输入"的循环：输入流被关闭（Ctrl+D）时直接结束脚本，
+# 否则 read 会持续失败并让循环无限刷屏。
+read_tty() {
+    local __var="$1"
+    if ! read -r "$__var" </dev/tty; then
+        echo "" >&2
+        error "输入流已关闭（Ctrl+D），已取消操作。"
+        exit 130
+    fi
+}
+
 # ----------------------------------------------------------------
 # 临时文件
 # ----------------------------------------------------------------
@@ -110,7 +122,7 @@ install_deps() {
     for cmd in unzip wget curl; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
-    [ ${#missing[@]} -eq 0 ] && return 0
+    if [ ${#missing[@]} -eq 0 ]; then return 0; fi
 
     info "检测到缺少依赖: ${missing[*]}，正在安装..."
     if [ -f /etc/debian_version ]; then
@@ -121,6 +133,18 @@ install_deps() {
         apk add --quiet "${missing[@]}" || true
     else
         error "无法自动安装依赖，请手动安装: ${missing[*]}"
+        exit 1
+    fi
+
+    # 复查：安装命令返回 0 也可能没装上（源不可用等），必须逐个确认
+    local still=()
+    for cmd in "${missing[@]}"; do
+        command -v "$cmd" &>/dev/null || still+=("$cmd")
+    done
+    if [ ${#still[@]} -gt 0 ]; then
+        error "以下依赖仍然缺失: ${still[*]}"
+        error "请手动安装后重试，例如: apt-get install -y ${still[*]}"
+        exit 1
     fi
     info "依赖安装完成。"
 }
@@ -150,7 +174,7 @@ read_current_config() {
         return
     fi
     # 匹配 -w "协议://地址/用户名" 中的 协议://地址:端口 部分
-    grep -oP '(?<=-w ")[^/]+://[^/]+(?=/)' "$SERVICE_FILE" 2>/dev/null || echo ""
+    grep -oE -- '-w "[^/]+://[^/]+' "$SERVICE_FILE" 2>/dev/null | sed 's/^-w "//' || echo ""
 }
 
 read_current_username() {
@@ -159,7 +183,7 @@ read_current_username() {
         return
     fi
     # 匹配 -w "协议://地址/用户名" 中的用户名部分
-    grep -oP '(?<=-w ")[^/]+/([^"]+)' "$SERVICE_FILE" 2>/dev/null | sed 's/^[^/]*\///' | head -1 || echo ""
+    grep -oE -- '-w "[^/]+/[^"]+' "$SERVICE_FILE" 2>/dev/null | sed 's/^-w "//; s/^[^/]*\///' | head -1 || echo ""
 }
 
 read_current_hostname() {
@@ -167,7 +191,7 @@ read_current_hostname() {
         echo ""
         return
     fi
-    grep -oP '(?<=--hostname ")[^"]+' "$SERVICE_FILE" 2>/dev/null || echo ""
+    grep -oE -- '--hostname "[^"]+' "$SERVICE_FILE" 2>/dev/null | sed 's/^--hostname "//' || echo ""
 }
 
 # ----------------------------------------------------------------
@@ -249,7 +273,7 @@ read_current_relay_hostname() {
         echo ""
         return
     fi
-    grep -oP '(?<=--hostname ")[^"]+' "$SERVICE_FILE" 2>/dev/null || echo ""
+    grep -oE -- '--hostname "[^"]+' "$SERVICE_FILE" 2>/dev/null | sed 's/^--hostname "//' || echo ""
 }
 
 # ----------------------------------------------------------------
@@ -262,7 +286,7 @@ read_current_relay_port() {
         return
     fi
     # 匹配 --listeners "tcp://0.0.0.0:11010" 这样的格式
-    grep -oP "(?<=${proto}://0\\.0\\.0\\.0:)[0-9]+" "$SERVICE_FILE" 2>/dev/null | head -1 || echo ""
+    grep -oE -- "${proto}://0\.0\.0\.0:[0-9]+" "$SERVICE_FILE" 2>/dev/null | sed "s|^${proto}://0\.0\.0\.0:||" | head -1 || echo ""
 }
 
 # ----------------------------------------------------------------
@@ -273,7 +297,7 @@ read_current_relay_whitelist() {
         echo ""
         return
     fi
-    grep -oP '(?<=--relay-network-whitelist ")[^"]+' "$SERVICE_FILE" 2>/dev/null | head -1 || echo ""
+    grep -oE -- '--relay-network-whitelist "[^"]+' "$SERVICE_FILE" 2>/dev/null | sed 's/^--relay-network-whitelist "//' | head -1 || echo ""
 }
 
 # ----------------------------------------------------------------
@@ -455,7 +479,7 @@ prompt_username() {
         else
             printf "请输入用户名 (例: myuser): " >&2
         fi
-        read -r val </dev/tty
+        read_tty val
         val="${val:-$default}"
         if [ -z "$val" ]; then
             warn "用户名不能为空，请重新输入。"
@@ -485,7 +509,7 @@ prompt_hostname() {
         else
             printf "请输入机器名/节点名 (例: my-router): " >&2
         fi
-        read -r val </dev/tty
+        read_tty val
         val="${val:-$default}"
         if [ -z "$val" ]; then
             warn "机器名不能为空，请重新输入。"
@@ -559,7 +583,7 @@ prompt_console() {
     while true; do
         [ -n "$cur_console" ] && printf "请输入控制台地址 (当前: ${CYAN}%s${RESET}，直接回车保留): " "$cur_console" >&2 \
                                || printf "请输入控制台地址 (例: ${CYAN}udp://1.2.3.4:22022${RESET}): " >&2
-        read -r manual </dev/tty
+        read_tty manual
         manual="${manual:-$cur_console}"
         if [ -z "$manual" ]; then
             warn "地址不能为空，请重新输入。"
@@ -592,7 +616,7 @@ prompt_network_name() {
         else
             printf "请输入网络名称 (network_name): " >&2
         fi
-        read -r val </dev/tty
+        read_tty val
         val="${val:-$default}"
         if [ -z "$val" ]; then
             warn "网络名称不能为空，请重新输入。"
@@ -619,7 +643,7 @@ prompt_network_secret() {
         else
             printf "请输入网络密钥/密码 (network_secret): " >&2
         fi
-        read -r val </dev/tty
+        read_tty val
         val="${val:-$default}"
         if [ -z "$val" ]; then
             warn "网络密钥不能为空，请重新输入。"
@@ -655,7 +679,7 @@ prompt_ipv4() {
 
     while true; do
         printf "请输入虚拟网络 IPv4 地址 (例如: ${CYAN}10.0.0.50${RESET}): " >&2
-        read -r val </dev/tty
+        read_tty val
         val="${val:-$default}"
         if [ -z "$val" ]; then
             warn "IP 地址不能为空。"
@@ -923,7 +947,7 @@ prompt_web_public_ip() {
     # 手动输入
     while true; do
         printf "请输入服务器公网 IP 地址: " >&2
-        read -r val </dev/tty
+        read_tty val
         if [ -z "$val" ]; then
             warn "公网 IP 不能为空。"
             continue
@@ -1247,7 +1271,7 @@ prompt_relay_hostname() {
         else
             printf "请输入节点主机名 (例: relay-server-01): " >&2
         fi
-        read -r val </dev/tty
+        read_tty val
         val="${val:-$default}"
         if [ -z "$val" ]; then
             warn "主机名不能为空，请重新输入。"
@@ -1360,7 +1384,7 @@ prompt_relay_whitelist() {
         else
             printf "允许中继的网络名: " >&2
         fi
-        read -r val </dev/tty
+        read_tty val
         val="${val:-$default}"
 
         if [ -z "$val" ]; then
@@ -1389,30 +1413,37 @@ prompt_relay_whitelist() {
 # 交互：选择版本
 # ----------------------------------------------------------------
 prompt_version() {
-    local choice ver
+    local choice ver v1 v2
+    local discovered=()
+
+    # 从主镜像目录自动发现可用版本（取最新两个），取不到时回退内置默认
+    while IFS= read -r v; do
+        [ -n "$v" ] && discovered+=("$v")
+    done < <(list_mirror_versions "${LOCAL_MIRRORS[0]}" 2>/dev/null | head -2)
+    v1="${discovered[0]:-v2.6.4}"
+    v2="${discovered[1]:-v2.4.5}"
 
     while true; do
         printf "\n请选择要安装的 EasyTier 版本:\n" >&2
-        printf "  ${BOLD}1)${RESET} v2.6.4（最新版，默认）\n" >&2
-        printf "  ${BOLD}2)${RESET} v2.4.5（稳定版）\n" >&2
+        printf "  ${BOLD}1)${RESET} %s（最新版，默认）\n" "$v1" >&2
+        printf "  ${BOLD}2)${RESET} %s\n" "$v2" >&2
         printf "  ${BOLD}3)${RESET} 手动输入版本号\n" >&2
         printf "请输入选项 [1/2/3]（默认: 1）: " >&2
-        read -r choice </dev/tty
+        read_tty choice
         choice="${choice:-1}"
 
         case "$choice" in
-            1) ver="v2.6.4"; break ;;
-            2) ver="v2.4.5"; break ;;
+            1) ver="$v1"; break ;;
+            2) ver="$v2"; break ;;
             3)
                 while true; do
                     printf "请输入版本号（不带 v，例如 2.5.1）: " >&2
-                    read -r ver </dev/tty
+                    read_tty ver
                     if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                         ver="v${ver}"
                         break
-                    else
-                        warn "版本号格式无效（需为 X.Y.Z，如 2.5.1），请重新输入。"
                     fi
+                    warn "版本号格式无效（需为 X.Y.Z，如 2.5.1），请重新输入。"
                 done
                 break
                 ;;
@@ -1494,7 +1525,8 @@ _human_size() {
 _get_remote_size() {
     local url="$1" hdr="" total="" code=""
     if command -v curl >/dev/null 2>&1; then
-        hdr=$(curl -sL -D - -o /dev/null -r 0-0 --connect-timeout 8 --max-time 12 "$url" 2>/dev/null | tr -d '\r')
+        # 探测只用于取文件大小/进度显示，超时短一些，避免多镜像/多代理逐个探测时拖慢回退
+        hdr=$(curl -sL -D - -o /dev/null -r 0-0 --connect-timeout 5 --max-time 8 "$url" 2>/dev/null | tr -d '\r')
         # 首个状态行是初始响应（跳转为 3xx），非 2xx/3xx 说明是错误页，不取其长度
         code=$(printf '%s\n' "$hdr" | awk '/^HTTP\// { print $2; exit }')
         case "$code" in
@@ -1591,6 +1623,30 @@ watch_download() {
         info "$done_msg"
     fi
     return $rc
+}
+
+# 从本地镜像目录列表发现可用版本（形如 v2.6.4），按版本号从新到旧输出；失败返回非零
+list_mirror_versions() {
+    local mirror="$1" html
+    html=$(curl -sL -m 10 "$mirror/" 2>/dev/null) || return 1
+    printf '%s\n' "$html" \
+        | grep -oE 'href="v[0-9]+\.[0-9]+\.[0-9]+/"' \
+        | sed 's/^href="//; s|/"$||' \
+        | sort -u -rV
+}
+
+# 检查目标目录所在分区可用空间（MB）。df 取不到数值时放行，避免误拦。
+check_disk_space() {
+    local need_mb="$1" dir="$2" avail
+    avail=$(df -Pm "$dir" 2>/dev/null | awk 'NR==2 {print $4}')
+    case "$avail" in
+        ''|*[!0-9]*) return 0 ;;
+    esac
+    if [ "$avail" -lt "$need_mb" ]; then
+        error "磁盘空间不足：${dir} 所在分区可用 ${avail}MB，需要约 ${need_mb}MB。"
+        return 1
+    fi
+    return 0
 }
 
 # ----------------------------------------------------------------
@@ -1709,7 +1765,13 @@ download_and_extract() {
 
     title "解压文件"
     mkdir -p "$INSTALL_DIR"
-    unzip -o "$TMP_ZIP" -d "$INSTALL_DIR/" >&2
+    if ! check_disk_space 200 "$INSTALL_DIR"; then
+        return 1
+    fi
+    if ! unzip -o "$TMP_ZIP" -d "$INSTALL_DIR/" >&2; then
+        error "解压失败，安装包可能已损坏或下载不完整。"
+        return 1
+    fi
 
     local sub_dir="${INSTALL_DIR}/${base_name}"
     if [ -d "$sub_dir" ]; then
@@ -2583,7 +2645,7 @@ do_modify() {
                 cur_cfg_peer=$(read_current_conf_peer_uri)
                 cur_cfg_proxy_cidr=$(read_current_conf_proxy_cidr)
                 cur_cfg_enc=$(read_current_conf_encryption)
-                cur_cfg_listen=$(_read_yaml_val "listeners" | grep -oP '://[^"]+' | sed 's|//0.0.0.0:||' | while read -r p; do echo "$p"; done | tr '\n' '|' | sed 's/|$//') || true
+                cur_cfg_listen=$(_read_yaml_val "listeners" | grep -oE '://[^"]+' | sed 's|//0.0.0.0:||' | while read -r p; do echo "$p"; done | tr '\n' '|' | sed 's/|$//') || true
 
                 write_config_file "$cfg_hostname" "$cfg_netname" "$cfg_netsec" \
                     "${cur_cfg_ip:-automatic}" "${cur_cfg_peer:-}" "${cur_cfg_proxy_cidr:-false}" "$cur_cfg_enc" "${cur_cfg_listen:-}"
