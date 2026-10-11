@@ -1420,8 +1420,8 @@ prompt_version() {
     while IFS= read -r v; do
         [ -n "$v" ] && discovered+=("$v")
     done < <(list_mirror_versions "${LOCAL_MIRRORS[0]}" 2>/dev/null | head -2)
-    v1="${discovered[0]:-v2.6.4}"
-    v2="${discovered[1]:-v2.4.5}"
+    v1="${discovered[0]:-v2.7.0}"
+    v2="${discovered[1]:-v2.6.4}"
 
     while true; do
         printf "\n请选择要安装的 EasyTier 版本:\n" >&2
